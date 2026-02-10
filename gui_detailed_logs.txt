@@ -1,0 +1,66 @@
+
+======================================================================
+🎯 GUI WORKER THREAD STARTED
+======================================================================
+📁 PDF: /media/dev/data/Work/Bidding tools/MarAngeloPolicarpioMarquezResume.pdf
+🤖 Model: gpt-4o-mini
+📝 Customize Summary: True
+💼 Customize Experience: True
+🛠️  Customize Skills: True
+
+1️⃣  Initializing customizer...
+   ✅ Customizer created
+   resume_data initial state: True
+
+2️⃣  Customizing resume content...
+Analyzing job description...
+Customizing resume content...
+
+✓ Customizing summary...
+  ✗ Error customizing summary: 'ascii' codec can't encode character '\U0001f539' in position 171: ordinal not in range(128)
+✓ Customizing experience bullets...
+  ✗ Error customizing experience: 'ascii' codec can't encode character '\U0001f539' in position 171: ordinal not in range(128)
+✓ Prioritizing skills...
+  ✗ Error prioritizing skills: 'ascii' codec can't encode character '\U0001f539' in position 171: ordinal not in range(128)
+   ✅ Customization complete
+   Updates received: []
+   resume_data summary after customize: 675 chars
+   Has HTML: True
+
+3️⃣  Applying updates...
+
+======================================================================
+🔧 apply_updates() STARTED
+======================================================================
+📋 Updates received: []
+✅ resume_data exists: True
+📊 Sections in resume_data: ['SummarySection', 'EducationSection', 'ExperienceSection', 'TechnologySection', 'ActivitySection', 'LanguageSection', 'CertificateSection']
+📝 Initial summary length: 675 chars
+📝 Initial summary has HTML: True
+📝 Initial summary preview: <strong>Senior Software Engineer</strong> with over <strong>6 years of experience</strong> in <stron...
+❌ CRITICAL ERROR: Final summary still has HTML tags after all updates!
+   This means the update did not work correctly
+   ✅ Updates applied
+   resume_data summary after apply_updates: 675 chars
+   Has HTML: True
+   Preview: <strong>Senior Software Engineer</strong> with over <strong>6 years of experience</strong> in <stron...
+
+4️⃣  Emitting finished signal with customizer object...
+   ✅ Signal emitted
+
+======================================================================
+🎯 GUI WORKER THREAD COMPLETED
+======================================================================
+
+⚠️  WARNING: Summary has HTML tags before save in GUI!
+   This means apply_updates() did not work correctly
+⚠️  WARNING: resume_data still has HTML tags (original content) before save!
+   Summary: <strong>Senior Software Engineer</strong> with over <strong>6 years of experience</strong> in <stron...
+   This means apply_updates() did not work correctly!
+⚠️  WARNING: updater.data has HTML tags after deep copy!
+   This should not happen if resume_data was customized correctly
+⚠️  Warning: Data may not be customized. Summary still has original format.
+Successfully saved updated PDF to: /media/dev/data/Work/Bidding tools/result.pdf
+✅ Rendered visual PDF to: /media/dev/data/Work/Bidding tools/result.visual.pdf
+
+✓ Customized resume saved to: /media/dev/data/Work/Bidding tools/result.pdf

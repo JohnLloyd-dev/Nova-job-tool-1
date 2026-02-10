@@ -1,0 +1,49 @@
+About Us:
+Outsourced. ph is a leading ISO-certified Philippines offshore outsourcing company that provides dedicated remote staff to some of the world's leading international companies. Outsourced is recognized as one of the Best Places to Work and has achieved Great Place to Work Certification. We are committed to providing a positive and supportive work environment where all staff can thrive. As an Outsourced staff member, you will enjoy a fun and friendly working environment, competitive salaries, opportunities for growth and development, work-life balance, and the chance to share your passion with a team of over 1,000 talented professionals.
+The Role
+We are building a next-generation payment orchestration platform that will revolutionize how merchants integrate and optimize multiple payment providers globally. We are looking for an experienced Senior Tech Lead – Backend to lead technical development, manage a backend engineering team, and own the DevOps infrastructure.
+This is a hands-on leadership role where you will spend significant time writing production code while providing technical direction and mentorship.
+
+Responsibilities
+Hands-On Development
+
+Write production-grade code daily, delivering features end-to-end from database design to API implementation and deployment
+Build backend services and RESTful APIs supporting business logic, transaction processing, and merchant integrations
+Integrate multiple payment providers and financial services using unified interfaces and adapter patterns
+Design data models and algorithms to support high-volume, low-latency transaction processing
+Debug, troubleshoot, and optimize system performance in production environments
+Technical Leadership
+Lead and manage a team of backend engineers, including task assignment, sprint planning, and performance management
+Own backend architecture and key design decisions for a microservices-based platform
+Conduct code reviews and mentor engineers through pair programming and technical guidance
+Collaborate with Product to define requirements, estimate timelines, and establish engineering best practices
+DevOps & Infrastructure
+Own and manage CI/CD pipelines, container orchestration, and cloud infrastructure
+Implement Infrastructure as Code (IaC) and manage cloud environments (AWS, GCP, or Azure)
+Set up and maintain databases, caching layers, monitoring, and observability tools
+Ensure secure, zero-downtime deployments, rollback strategies, and production stability
+Qualifications
+Must have
+Extensive backend engineering experience building production-grade distributed systems
+Proven experience leading and mentoring engineers while remaining hands-on with code
+Expert-level Node.js and TypeScript experience, including async programming and event-driven architectures
+Strong DevOps background: CI/CD, containers, cloud platforms, and IaC
+Nice to Have
+Experience with Go (Golang) for high-performance and concurrent systems
+Strong understanding of fintech or payment systems, transaction flows, and compliance
+Experience with microservices, message queues, and event-driven architectures
+Technical Skills
+RESTful API design (OpenAPI standards)
+Database design, query optimization, and caching strategies
+Third-party API integrations
+Docker & Kubernetes
+Monitoring & logging (Prometheus, Grafana, ELK)
+Terraform, CloudFormation, or similar IaC tools
+Security best practices and compliance requirements
+Unit, integration, and load testing
+Work Arrangement
+Homebased
+Work Schedule
+Monday to Friday | 1:00 PM – 10:00 PM (PH Time)
+Note: As part of our recruitment process, we conduct a background check on all hired candidates. Please ensure that all required documents are prepared and submitted promptly.
+By clicking on the "I'm Interested" button I hereby allow Outsourced Quality Assured Services, Inc. ("Outsourced") to store and collect my personal information for the purposes of employment application. As such, I agree and authorize Outsourced to collect, store, or continue to use my personal information for the above-stated purpose, and to retain my personal information for a period of 1 year, and for these purposes only.

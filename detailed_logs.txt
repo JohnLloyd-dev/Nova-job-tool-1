@@ -1,0 +1,52 @@
+
+======================================================================
+TESTING WITH DETAILED LOGGING
+======================================================================
+
+1️⃣  Creating customizer...
+
+2️⃣  Customizing...
+Analyzing job description...
+Customizing resume content...
+
+✓ Customizing summary...
+  Summary updated: Senior .NET Developer with over 6 years of experience in .NET Core and C#. Skill...
+✓ Customizing experience bullets...
+  Updated 3 experience entries
+✓ Prioritizing skills...
+  Organized skills into 17 categories
+
+3️⃣  Applying updates (this will show detailed logs)...
+
+======================================================================
+🔧 apply_updates() STARTED
+======================================================================
+📋 Updates received: ['summary', 'experiences', 'skills']
+✅ resume_data exists: True
+📊 Sections in resume_data: ['SummarySection', 'EducationSection', 'ExperienceSection', 'TechnologySection', 'ActivitySection', 'LanguageSection', 'CertificateSection']
+📝 Initial summary length: 675 chars
+📝 Initial summary has HTML: True
+📝 Initial summary preview: <strong>Senior Software Engineer</strong> with over <strong>6 years of experience</strong> in <stron...
+   Updated summary from 675 chars to 379 chars
+✅ Summary updated successfully in apply_updates()
+   New summary: Senior .NET Developer with over 6 years of experience in .NET Core and C#. Skill...
+  Applied updates to 3 experience entries
+✅ Final verification: Summary is customized (no HTML tags)
+
+4️⃣  Saving (this will show detailed logs)...
+✅ resume_data has customized content (no HTML tags)
+   Summary: Senior .NET Developer with over 6 years of experience in .NET Core and C#. Skilled in building high-...
+Successfully saved updated PDF to: test_logging.pdf
+✅ Rendered visual PDF to: test_logging.visual.pdf
+
+✓ Customized resume saved to: test_logging.pdf
+
+5️⃣  Verifying saved file...
+
+📊 FINAL RESULT:
+   Summary length: 379 chars
+   Has HTML tags: False
+   ✅ SUCCESS - No HTML tags, is customized
+   Preview: Senior .NET Developer with over 6 years of experience in .NET Core and C#. Skilled in building high-performance systems using React and developing clo...
+
+======================================================================
