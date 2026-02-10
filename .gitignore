@@ -32,6 +32,11 @@ wheels/
 
 # Logs
 *.log
+*_logs.txt
+*_detailed*.txt
+debug.log
+gui_debug.log
+gui_latest.log
 resume_customizer_gui.log
 
 # PDF files (except example)
