@@ -25,7 +25,7 @@ except ImportError:
     print("Error: PyQt6 not installed. Install with: pip install PyQt6")
     sys.exit(1)
 
-from resume_customizer import ResumeCustomizer, clean_text
+from resume_customizer import ResumeCustomizer, clean_text, organize_job_files
 
 
 # Setup logging
@@ -49,10 +49,11 @@ class CustomizationWorker(QThread):
     
     def __init__(self, pdf_path: str, job_description: str, api_key: str,
                  customize_summary: bool, customize_experience: bool,
-                 customize_skills: bool, model: str):
+                 customize_skills: bool, model: str, original_job_description: str = None):
         super().__init__()
         self.pdf_path = pdf_path
         self.job_description = job_description
+        self.original_job_description = original_job_description or job_description
         self.api_key = api_key
         self.customize_summary = customize_summary
         self.customize_experience = customize_experience
@@ -91,7 +92,12 @@ class CustomizationWorker(QThread):
             customizer.apply_updates(updates)
             
             self.progress.emit("Customization complete!")
-            self.finished.emit({'customizer': customizer, 'updates': updates})
+            self.finished.emit({
+                'customizer': customizer,
+                'updates': updates,
+                'original_job_description': self.original_job_description,
+                'model': self.model
+            })
             
         except Exception as e:
             logging.error(f"Error during customization: {e}", exc_info=True)
@@ -533,7 +539,8 @@ class ResumeCustomizerGUI(QMainWindow):
             customize_summary=customize_summary,
             customize_experience=customize_experience,
             customize_skills=customize_skills,
-            model=self.model_combo.currentText()
+            model=self.model_combo.currentText(),
+            original_job_description=raw_job_description  # Store original for saving
         )
         
         self.worker.progress.connect(self.update_progress)
@@ -551,13 +558,15 @@ class ResumeCustomizerGUI(QMainWindow):
         """Handle successful customization."""
         self.customizer = result['customizer']
         updates = result.get('updates', {})
+        original_job_description = result.get('original_job_description', '')
+        model = result.get('model', 'gpt-4o-mini')
         
         self.progress_bar.setVisible(False)
         self.customize_btn.setEnabled(True)
         self.cancel_btn.setEnabled(False)
-        self.status_label.setText("Customization complete! Save the resume.")
+        self.status_label.setText("Customization complete! Saving files...")
         
-        # Ask to save
+        # Determine output path
         output_path = self.output_path_input.text().strip()
         if not output_path:
             base = Path(self.pdf_path_input.text()).stem
@@ -565,17 +574,58 @@ class ResumeCustomizerGUI(QMainWindow):
             output_path = str(output_dir / f"{base}_customized.pdf")
         
         try:
+            # Step 1: Save customized resume to ROOT directory (quick access)
             self.customizer.save_customized_resume(
                 output_path,
                 render_visual=True
             )
+            
+            # Determine visual PDF path in root directory (created by save_customized_resume)
+            visual_pdf_path = str(Path(output_path).with_suffix('.visual.pdf'))
+            visual_path_obj = Path(visual_pdf_path)
+            if not visual_path_obj.exists():
+                visual_pdf_path = None
+                logging.info(f"Visual PDF not found at {visual_pdf_path}, skipping copy to jobs folder")
+            else:
+                logging.info(f"Visual PDF found at {visual_pdf_path}, will copy to jobs folder")
+            
+            # Step 2: Also organize files into jobs/ folder structure (archive)
+            base_dir = Path(self.pdf_path_input.text()).parent
+            organized = organize_job_files(
+                job_description=original_job_description,
+                resume_pdf_path=output_path,
+                visual_pdf_path=visual_pdf_path,
+                model=model,
+                base_dir=base_dir
+            )
+            
+            # Show success message with both locations
+            root_dir = Path(output_path).parent
+            message = (
+                f"✅ Customized resume saved to ROOT directory:\n"
+                f"   {output_path}\n"
+            )
+            if visual_pdf_path:
+                message += f"   {visual_pdf_path}\n"
+            message += (
+                f"\n📁 Files also organized in JOBS folder:\n"
+                f"   {organized['folder']}\n\n"
+                f"Saved files in jobs folder:\n"
+                f"  • Job description: {Path(organized['job_description']).name}\n"
+                f"  • Resume: {Path(organized['resume']).name}\n"
+            )
+            if 'visual_resume' in organized:
+                message += f"  • Visual resume: {Path(organized['visual_resume']).name}\n"
+            message += f"  • Metadata: {Path(organized['metadata']).name}"
+            
             QMessageBox.information(
                 self,
                 "Success",
-                f"Customized resume saved to:\n{output_path}"
+                message
             )
             self.save_settings()
         except Exception as e:
+            logging.error(f"Error saving files: {e}", exc_info=True)
             QMessageBox.critical(self, "Error", f"Failed to save resume: {e}")
     
     def customization_error(self, error: str):

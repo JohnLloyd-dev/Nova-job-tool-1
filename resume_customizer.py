@@ -11,10 +11,12 @@ import os
 import sys
 import copy
 import logging
+import shutil
 from pathlib import Path
 from typing import Dict, Any, List, Optional
 import argparse
 import re
+from datetime import datetime
 
 try:
     from openai import OpenAI
@@ -284,13 +286,6 @@ class ResumeCustomizer:
     
     def customize_summary(self, job_description: str, model: str = "gpt-4o-mini") -> str:
         """Customize summary section based on job description."""
-        # DEBUG: Check for emoji before cleaning
-        if job_description:
-            for i, char in enumerate(job_description):
-                if ord(char) > 127:
-                    print(f"[DEBUG] Found non-ASCII at position {i} in job_description: {repr(char)} (U+{ord(char):04X})")
-                    print(f"[DEBUG] Context: {repr(job_description[max(0, i-20):i+20])}")
-        
         job_description = clean_text(job_description)
         resume_content = self.extract_resume_content()
         
@@ -340,25 +335,7 @@ Return ONLY the customized summary text, no explanations or additional text."""
         
         # CRITICAL: Final cleaning pass - ensure NO emojis in messages before API call
         for msg in messages:
-            # DEBUG: Check for emoji in message content
-            content = msg['content']
-            if content:
-                for i, char in enumerate(content):
-                    if ord(char) > 127:
-                        print(f"[DEBUG] Found non-ASCII at position {i} in message content: {repr(char)} (U+{ord(char):04X})")
-                        print(f"[DEBUG] Message role: {msg['role']}")
-                        print(f"[DEBUG] Context around position {i}: {repr(content[max(0, i-20):i+20])}")
-                        if i == 171:
-                            print(f"[DEBUG] *** THIS IS POSITION 171 - THE PROBLEMATIC CHARACTER ***")
-                            print(f"[DEBUG] Full content length: {len(content)}")
-                            print(f"[DEBUG] First 200 chars: {repr(content[:200])}")
             msg['content'] = clean_text(msg['content'])
-        
-        # DEBUG: Check model name
-        if model:
-            for i, char in enumerate(model):
-                if ord(char) > 127:
-                    print(f"[DEBUG] Found non-ASCII at position {i} in model: {repr(char)} (U+{ord(char):04X})")
         
         clean_model = clean_text(model)
         
@@ -499,10 +476,8 @@ Return ONLY the JSON object with "experiences" key, no additional text."""
                     description = clean_text(item.get('description', '') or item.get('text', ''))
                     bullets = [clean_text(bullet) for bullet in item.get('bullets', [])]
                     
-                    # Log what we found for debugging
                     if not title:
                         logging.warning(f"  Project item has no title. Available keys: {list(item.keys())}")
-                        logging.warning(f"  Item content: {safe_str(item)[:200]}")
                     
                     proj = {
                         'title': title,
@@ -882,48 +857,106 @@ Return ONLY the JSON object, no additional text."""
                 updated_count = 0
                 total_items = len(proj_section.get('items', []))
                 
-                # Create a mapping of custom projects
+                # Create a mapping of custom projects using normalized keys
                 custom_proj_map = {}
                 for custom_proj in updates['projects']:
-                    key = custom_proj.get('title', '').lower().strip()
+                    # Use normalize_for_matching for consistent key generation
+                    key = normalize_for_matching(custom_proj.get('title', ''))
                     custom_proj_map[key] = custom_proj
                 
                 # Update ALL project items
-                for item in proj_section.get('items', []):
-                    original_title = item.get('title', '')
-                    item_key = original_title.lower().strip()
+                for idx, item in enumerate(proj_section.get('items', []), 1):
+                    original_title = item.get('title', '') or item.get('name', '') or item.get('projectName', '')
+                    if not original_title:
+                        logging.warning(f"  Warning: Project item #{idx} has no title. Available keys: {list(item.keys())}")
+                        continue
                     
-                    if item_key in custom_proj_map:
-                        custom_proj = custom_proj_map[item_key]
+                    # Normalize for matching (same as custom projects)
+                    norm_original_title = normalize_for_matching(original_title)
+                    
+                    matched = False
+                    
+                    # Try exact match first
+                    if norm_original_title in custom_proj_map:
+                        custom_proj = custom_proj_map[norm_original_title]
                         if 'description' in custom_proj:
                             item['description'] = custom_proj['description']
                         if 'bullets' in custom_proj:
-                            item['bullets'] = custom_proj['bullets']
-                        item['title'] = original_title  # Preserve original
+                            # Ensure bullets list exists and is properly set
+                            item['bullets'] = list(custom_proj['bullets'])
+                        # Preserve original title field name
+                        if 'title' in item:
+                            item['title'] = original_title
+                        elif 'name' in item:
+                            item['name'] = original_title
+                        elif 'projectName' in item:
+                            item['projectName'] = original_title
                         updated_count += 1
+                        matched = True
+                        logging.info(f"  Matched project: {clean_text(original_title)}")
                     else:
-                        # Try fuzzy matching
-                        matched = False
+                        # Try fuzzy matching with word-based similarity
+                        best_match = None
+                        best_score = 0.0
+                        
                         for custom_proj in updates['projects']:
-                            custom_title = custom_proj.get('title', '').lower().strip()
-                            if custom_title in original_title.lower() or original_title.lower() in custom_title:
-                                if 'description' in custom_proj:
-                                    item['description'] = custom_proj['description']
-                                if 'bullets' in custom_proj:
-                                    item['bullets'] = custom_proj['bullets']
+                            custom_title = custom_proj.get('title', '')
+                            norm_custom_title = normalize_for_matching(custom_title)
+                            
+                            # Calculate match score based on word similarity
+                            # Filter out punctuation-only words (like '-', '.', etc.)
+                            orig_words = {w for w in norm_original_title.split() if w and not re.match(r'^[^\w]+$', w)}
+                            custom_words = {w for w in norm_custom_title.split() if w and not re.match(r'^[^\w]+$', w)}
+                            
+                            if orig_words and custom_words:
+                                common_words = orig_words.intersection(custom_words)
+                                # Calculate score based on common words
+                                score = len(common_words) / max(len(orig_words), len(custom_words))
+                                # If most key words match, boost the score
+                                if len(common_words) >= 2:  # At least 2 common words
+                                    score = max(score, 0.6)
+                            else:
+                                score = 0.0
+                            
+                            # Also try substring matching as fallback
+                            if not score and (norm_custom_title in norm_original_title or norm_original_title in norm_custom_title):
+                                score = 0.7
+                            
+                            if score > best_score and score >= 0.5:  # Require at least 50% match
+                                best_score = score
+                                best_match = custom_proj
+                        
+                        if best_match:
+                            if 'description' in best_match:
+                                item['description'] = best_match['description']
+                            if 'bullets' in best_match:
+                                # Ensure bullets list exists and is properly set
+                                item['bullets'] = list(best_match['bullets'])
+                            # Preserve original title field name
+                            if 'title' in item:
                                 item['title'] = original_title
-                                updated_count += 1
-                                matched = True
-                                break
+                            elif 'name' in item:
+                                item['name'] = original_title
+                            elif 'projectName' in item:
+                                item['projectName'] = original_title
+                            updated_count += 1
+                            matched = True
+                            logging.info(f"  Fuzzy matched project: {clean_text(original_title)} (score: {best_score:.2f})")
                         
                         if not matched:
-                            logging.warning(f"  Warning: No match found for project: {original_title}")
+                            logging.warning(f"  Warning: No match found for project: {clean_text(original_title)}")
+                            logging.warning(f"    Normalized: '{norm_original_title}'")
+                            logging.warning(f"    Available custom projects:")
+                            for proj in updates['projects']:
+                                norm_proj_title = normalize_for_matching(proj.get('title', ''))
+                                logging.warning(f"      - '{norm_proj_title}'")
                 
                 logging.info(f"  Applied updates to {updated_count} of {total_items} project entries")
                 if updated_count < total_items:
                     logging.warning(f"  WARNING: Only {updated_count} of {total_items} projects were updated!")
             
-            self.resume_data = self.updater.data
+            # CRITICAL: Ensure data is properly synced
+            self.resume_data = copy.deepcopy(self.updater.data)
         
         if 'skills' in updates:
             self.updater.update_skills(updates['skills'])
@@ -943,6 +976,179 @@ Return ONLY the JSON object, no additional text."""
         self.updater.data = copy.deepcopy(self.resume_data)
         self.updater.save_pdf(output_path, render_visual=render_visual)
         print(f"\n[OK] Customized resume saved to: {output_path}")
+
+
+def extract_job_title(job_description: str) -> str:
+    """Extract job title from job description.
+    
+    Looks for common patterns like:
+    - JOB TITLE: ...
+    - Position: ...
+    - Title: ...
+    - Role: ...
+    """
+    if not job_description:
+        return "Unknown_Job"
+    
+    # Clean the job description first
+    job_desc = clean_text(job_description)
+    
+    # Try to find job title patterns
+    patterns = [
+        r'(?:JOB\s*TITLE|Position|Title|Role|Job Title|POSITION|TITLE|ROLE)[:\s]+([^\n]+)',
+        r'^([A-Z][A-Za-z\s&]+(?:Engineer|Developer|Architect|Specialist|Manager|Analyst|Consultant|Lead|Senior|Junior)[^\n]*)',
+    ]
+    
+    for pattern in patterns:
+        match = re.search(pattern, job_desc, re.IGNORECASE | re.MULTILINE)
+        if match:
+            title = match.group(1).strip()
+            # Clean up the title
+            title = re.sub(r'[^\w\s\-&]', '', title)  # Remove special chars except - and &
+            title = re.sub(r'\s+', '_', title)  # Replace spaces with underscores
+            title = title[:50]  # Limit length
+            if title:
+                return title
+    
+    # Fallback: use first line or first 50 chars
+    first_line = job_desc.split('\n')[0].strip()
+    if first_line:
+        title = re.sub(r'[^\w\s\-&]', '', first_line[:50])
+        title = re.sub(r'\s+', '_', title)
+        return title if title else "Unknown_Job"
+    
+    return "Unknown_Job"
+
+
+def create_job_folder(base_dir: Optional[Path] = None) -> Path:
+    """Create a folder for organizing job applications.
+    
+    Structure: jobs/YYYY-MM-DD_HH-MM-SS_JobTitle/
+    
+    Args:
+        base_dir: Base directory (defaults to current working directory)
+        
+    Returns:
+        Path to the created job folder
+    """
+    if base_dir is None:
+        base_dir = Path.cwd()
+    
+    jobs_dir = base_dir / "jobs"
+    jobs_dir.mkdir(exist_ok=True)
+    
+    # Create timestamped folder
+    timestamp = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
+    job_folder = jobs_dir / f"{timestamp}_Job"
+    job_folder.mkdir(exist_ok=True)
+    
+    return job_folder
+
+
+def organize_job_files(
+    job_description: str,
+    resume_pdf_path: str,
+    visual_pdf_path: Optional[str] = None,
+    job_title: Optional[str] = None,
+    model: str = "gpt-4o-mini",
+    base_dir: Optional[Path] = None
+) -> Dict[str, str]:
+    """Organize job description and customized resume into a structured folder.
+    
+    NOTE: This function COPIES files to the jobs folder. The original files in the
+    root directory remain untouched for quick access.
+    
+    Creates:
+    - jobs/YYYY-MM-DD_HH-MM-SS_JobTitle/
+      ├── job_description.txt
+      ├── resume_customized.pdf (copy from root)
+      ├── resume_customized.visual.pdf (copy from root, if provided)
+      └── metadata.json
+    
+    Args:
+        job_description: The job description text
+        resume_pdf_path: Path to the customized resume PDF (in root directory)
+        visual_pdf_path: Path to the visual PDF in root directory (optional)
+        job_title: Job title (will be extracted if not provided)
+        model: Model used for customization
+        base_dir: Base directory where jobs/ folder will be created (defaults to current working directory)
+        
+    Returns:
+        Dictionary with paths to saved files in jobs folder:
+        {
+            'folder': path to job folder,
+            'job_description': path to job_description.txt,
+            'resume': path to resume_customized.pdf (copy),
+            'visual_resume': path to visual PDF copy (if provided),
+            'metadata': path to metadata.json
+        }
+    """
+    # Extract job title if not provided
+    if not job_title:
+        job_title = extract_job_title(job_description)
+    
+    # Create base folder structure
+    if base_dir is None:
+        base_dir = Path.cwd()
+    
+    jobs_dir = base_dir / "jobs"
+    jobs_dir.mkdir(exist_ok=True)
+    
+    # Create timestamped folder with job title
+    timestamp = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
+    # Sanitize job title for folder name
+    safe_title = re.sub(r'[^\w\s\-&]', '', job_title)
+    safe_title = re.sub(r'\s+', '_', safe_title)
+    safe_title = safe_title[:50]  # Limit length
+    
+    job_folder = jobs_dir / f"{timestamp}_{safe_title}"
+    job_folder.mkdir(exist_ok=True)
+    
+    # Save job description
+    job_desc_path = job_folder / "job_description.txt"
+    job_desc_path.write_text(job_description, encoding='utf-8')
+    
+    # Copy resume PDF
+    resume_source = Path(resume_pdf_path)
+    resume_dest = job_folder / "resume_customized.pdf"
+    if resume_source.exists():
+        shutil.copy2(resume_source, resume_dest)
+    
+    # Copy visual PDF if provided
+    visual_dest = None
+    if visual_pdf_path:
+        visual_source = Path(visual_pdf_path)
+        visual_dest = job_folder / "resume_customized.visual.pdf"
+        if visual_source.exists():
+            shutil.copy2(visual_source, visual_dest)
+            visual_dest = str(visual_dest)
+    
+    # Create metadata
+    metadata = {
+        'job_title': job_title,
+        'timestamp': timestamp,
+        'date': datetime.now().isoformat(),
+        'model_used': model,
+        'resume_source': str(resume_pdf_path),
+        'visual_resume_source': str(visual_pdf_path) if visual_pdf_path else None
+    }
+    
+    metadata_path = job_folder / "metadata.json"
+    with open(metadata_path, 'w', encoding='utf-8') as f:
+        json.dump(metadata, f, indent=2, ensure_ascii=False)
+    
+    result = {
+        'folder': str(job_folder),
+        'job_description': str(job_desc_path),
+        'resume': str(resume_dest),
+        'metadata': str(metadata_path)
+    }
+    
+    if visual_dest:
+        result['visual_resume'] = visual_dest
+    
+    logging.info(f"Organized job files in: {job_folder}")
+    return result
 
 
 def read_job_description(file_path: str) -> str:

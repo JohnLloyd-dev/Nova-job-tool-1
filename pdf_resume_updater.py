@@ -340,7 +340,6 @@ class PDFResumeUpdater:
                     from pdf_renderer import PDFRenderer
                     visual_path = str(Path(output_path).with_suffix('.visual.pdf'))
                     
-                    # DEBUG: Verify data is customized before rendering
                     summary_for_render = ""
                     for section in self.data.get('sections', []):
                         if section.get('__t') == 'SummarySection':
@@ -348,40 +347,12 @@ class PDFResumeUpdater:
                                 summary_for_render = section['items'][0].get('text', '')
                                 break
                     
-                    print(f"[DEBUG save_pdf] Summary for renderer: {len(summary_for_render)} chars, Has HTML: {'<strong>' in summary_for_render}")
-                    if summary_for_render:
-                        print(f"[DEBUG save_pdf] Summary preview: {summary_for_render[:150]}...")
-                    
-                    if '<strong>' in summary_for_render:
-                        print(f"⚠️  WARNING: Visual PDF will render with HTML tags in summary!")
-                    else:
-                        print(f"✓ Visual PDF will render customized content ({len(summary_for_render)} chars, no HTML)")
-                    
                     # CRITICAL: Make a deep copy to ensure renderer gets the exact data we have
                     import copy
                     data_for_renderer = copy.deepcopy(self.data)
                     
-                    # Double-check the copy has the customized summary
-                    verify_summary = ""
-                    for section in data_for_renderer.get('sections', []):
-                        if section.get('__t') == 'SummarySection':
-                            if section.get('items'):
-                                verify_summary = section['items'][0].get('text', '')
-                                break
-                    print(f"[DEBUG save_pdf] Verified copy summary: {len(verify_summary)} chars, Has HTML: {'<strong>' in verify_summary}")
-                    print(f"[DEBUG save_pdf] Copy matches original: {verify_summary == summary_for_render}")
-                    
                     # CRITICAL: Pass self.data (which should have updates) to renderer
                     renderer = PDFRenderer(data_for_renderer)
-                    
-                    # DEBUG: Verify renderer received correct data
-                    renderer_summary = ""
-                    for section in renderer.data.get('sections', []):
-                        if section.get('__t') == 'SummarySection':
-                            if section.get('items'):
-                                renderer_summary = section['items'][0].get('text', '')
-                                break
-                    print(f"[DEBUG save_pdf] Renderer received summary: {len(renderer_summary)} chars, Has HTML: {'<strong>' in renderer_summary}")
                     
                     renderer.render_pdf(visual_path)
                     print(f"✅ Rendered visual PDF to: {visual_path}")

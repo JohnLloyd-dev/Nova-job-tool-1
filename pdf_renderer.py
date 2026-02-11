@@ -43,16 +43,12 @@ class PDFRenderer:
         self.header = self.data.get('header', {})
         self.sections = self.data.get('sections', [])
         
-        # DEBUG: Verify data received
         summary_check = ""
         for section in self.sections:
             if section.get('__t') == 'SummarySection':
                 if section.get('items'):
                     summary_check = section['items'][0].get('text', '')
                     break
-        print(f"[DEBUG PDFRenderer] Initialized with summary: {len(summary_check)} chars, Has HTML: {'<strong>' in summary_check}")
-        if summary_check:
-            print(f"[DEBUG PDFRenderer] Summary preview: {summary_check[:100]}...")
     
     def clean_html_text(self, text: str) -> str:
         """Remove HTML tags from text."""
@@ -294,10 +290,6 @@ class PDFRenderer:
                     text = item.get('text', '')
                     # CRITICAL: Clean HTML tags - the text should already be clean, but ensure it is
                     text = self.clean_html_text(text)
-                    # DEBUG: Log what we're rendering
-                    if len(html_parts) < 10:  # Only log first time to avoid spam
-                        print(f"[DEBUG generate_html] Summary text: {len(text)} chars, Has HTML: {'<' in text and '>' in text}")
-                        print(f"[DEBUG generate_html] Summary preview: {text[:100]}...")
                     html_parts.append(f'<p class="summary">{text}</p>')
                 html_parts.append('</div>')
             

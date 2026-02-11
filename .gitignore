@@ -56,3 +56,6 @@ Thumbs.db
 *.bak
 result*.pdf
 sharesource_*.pdf
+
+# User data
+jobs/
