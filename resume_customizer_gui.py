@@ -8,9 +8,9 @@ Rebuilt from scratch to ensure proper separation of API key and job description.
 
 import sys
 import os
+import platform
 from pathlib import Path
 from typing import Optional
-import logging
 from datetime import datetime
 
 try:
@@ -25,19 +25,24 @@ except ImportError:
     print("Error: PyQt6 not installed. Install with: pip install PyQt6")
     sys.exit(1)
 
-from resume_customizer import ResumeCustomizer, clean_text, organize_job_files
+from resume_customizer import ResumeCustomizer, clean_text, organize_job_files, sanitize_windows_filename, sanitize_windows_path, setup_windows_console
 
 
-# Setup logging
-log_file = Path(__file__).parent / 'resume_customizer_gui.log'
-logging.basicConfig(
-    level=logging.INFO,
-    format='%(asctime)s - %(levelname)s - %(message)s',
-    handlers=[
-        logging.FileHandler(log_file),
-        logging.StreamHandler()
-    ]
-)
+# Windows EXE compatibility: Detect if running as frozen executable
+def get_base_path():
+    """Get the base path for the application, handling both script and frozen EXE."""
+    if getattr(sys, 'frozen', False):
+        # Running as compiled executable (PyInstaller, cx_Freeze, etc.)
+        if hasattr(sys, '_MEIPASS'):
+            # PyInstaller
+            base_path = Path(sys.executable).parent
+        else:
+            # cx_Freeze or other
+            base_path = Path(sys.executable).parent
+    else:
+        # Running as script
+        base_path = Path(__file__).parent
+    return base_path
 
 
 class CustomizationWorker(QThread):
@@ -100,7 +105,6 @@ class CustomizationWorker(QThread):
             })
             
         except Exception as e:
-            logging.error(f"Error during customization: {e}", exc_info=True)
             self.error.emit(str(e))
 
 
@@ -352,7 +356,6 @@ class ResumeCustomizerGUI(QMainWindow):
                 )
             except Exception as e:
                 QMessageBox.critical(self, "Error", f"Failed to load file: {e}")
-                logging.error(f"Error loading job description file: {e}", exc_info=True)
     
     def browse_output_file(self):
         """Browse for output file location."""
@@ -408,32 +411,11 @@ class ResumeCustomizerGUI(QMainWindow):
         # Use toPlainText() to get plain text (no HTML formatting)
         raw_job_description = self.job_desc_text.toPlainText()
         
-        # Log raw job description info BEFORE stripping
-        logging.info(f"Raw job description length (before strip): {len(raw_job_description)}")
-        if raw_job_description:
-            logging.info(f"Raw job description first 100 chars: {repr(raw_job_description[:100])}")
-            if len(raw_job_description) > 100:
-                logging.info(f"Raw job description last 100 chars: {repr(raw_job_description[-100:])}")
-        
         # Strip whitespace
         raw_job_description = raw_job_description.strip()
         
-        # Log after stripping
-        logging.info(f"Raw job description length (after strip): {len(raw_job_description)}")
-        
         # Clean the job description
         cleaned_job_description = clean_text(raw_job_description)
-        
-        # Log cleaned job description info
-        logging.info(f"Cleaned job description length: {len(cleaned_job_description)}")
-        if cleaned_job_description:
-            logging.info(f"Cleaned job description first 100 chars: {repr(cleaned_job_description[:100])}")
-            if len(cleaned_job_description) > 100:
-                logging.info(f"Cleaned job description last 100 chars: {repr(cleaned_job_description[-100:])}")
-        
-        # Check if cleaning removed too much content
-        if raw_job_description and len(cleaned_job_description) < len(raw_job_description) * 0.5:
-            logging.warning(f"Warning: Cleaning removed {len(raw_job_description) - len(cleaned_job_description)} chars ({100 * (1 - len(cleaned_job_description) / len(raw_job_description)):.1f}%)")
         
         # Validate job description is not empty
         if not cleaned_job_description:
@@ -526,11 +508,6 @@ class ResumeCustomizerGUI(QMainWindow):
         customize_experience = self.experience_check.isChecked()
         customize_skills = self.skills_check.isChecked()
         
-        # Log what we're customizing
-        logging.info(f"Customization options: summary={customize_summary}, experience={customize_experience}, skills={customize_skills}")
-        logging.info(f"Job description length: {len(cleaned_job_description)}")
-        logging.info(f"Job description first 100 chars: {repr(cleaned_job_description[:100])}")
-        
         # Create worker with validated parameters
         self.worker = CustomizationWorker(
             pdf_path=self.pdf_path_input.text(),
@@ -566,12 +543,16 @@ class ResumeCustomizerGUI(QMainWindow):
         self.cancel_btn.setEnabled(False)
         self.status_label.setText("Customization complete! Saving files...")
         
-        # Determine output path
+        # Determine output path (Windows compatible)
         output_path = self.output_path_input.text().strip()
         if not output_path:
             base = Path(self.pdf_path_input.text()).stem
             output_dir = Path(self.pdf_path_input.text()).parent
             output_path = str(output_dir / f"{base}_customized.pdf")
+        
+        # Sanitize output path for Windows
+        output_path_obj = sanitize_windows_path(Path(output_path))
+        output_path = str(output_path_obj)
         
         try:
             # Step 1: Save customized resume to ROOT directory (quick access)
@@ -585,9 +566,6 @@ class ResumeCustomizerGUI(QMainWindow):
             visual_path_obj = Path(visual_pdf_path)
             if not visual_path_obj.exists():
                 visual_pdf_path = None
-                logging.info(f"Visual PDF not found at {visual_pdf_path}, skipping copy to jobs folder")
-            else:
-                logging.info(f"Visual PDF found at {visual_pdf_path}, will copy to jobs folder")
             
             # Step 2: Also organize files into jobs/ folder structure (archive)
             base_dir = Path(self.pdf_path_input.text()).parent
@@ -625,7 +603,6 @@ class ResumeCustomizerGUI(QMainWindow):
             )
             self.save_settings()
         except Exception as e:
-            logging.error(f"Error saving files: {e}", exc_info=True)
             QMessageBox.critical(self, "Error", f"Failed to save resume: {e}")
     
     def customization_error(self, error: str):
@@ -688,6 +665,9 @@ class ResumeCustomizerGUI(QMainWindow):
 
 def main():
     """Main entry point."""
+    # Setup Windows console for UTF-8 if needed
+    setup_windows_console()
+    
     app = QApplication(sys.argv)
     window = ResumeCustomizerGUI()
     window.show()

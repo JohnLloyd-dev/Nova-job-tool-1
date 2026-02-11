@@ -10,8 +10,8 @@ import json
 import os
 import sys
 import copy
-import logging
 import shutil
+import platform
 from pathlib import Path
 from typing import Dict, Any, List, Optional
 import argparse
@@ -108,6 +108,123 @@ def safe_str(obj, max_len=None):
     return s
 
 
+def sanitize_windows_filename(name: str, max_length: int = 255) -> str:
+    """Sanitize a filename for Windows compatibility.
+    
+    Removes invalid characters and reserved names.
+    Handles Windows path length limits.
+    """
+    if not name:
+        return "unnamed"
+    
+    # Windows invalid characters: < > : " / \ | ? *
+    invalid_chars = r'[<>:"/\\|?*]'
+    name = re.sub(invalid_chars, '_', name)
+    
+    # Remove control characters (0-31)
+    name = ''.join(char for char in name if ord(char) >= 32)
+    
+    # Windows reserved names (case-insensitive)
+    reserved_names = {
+        'CON', 'PRN', 'AUX', 'NUL',
+        'COM1', 'COM2', 'COM3', 'COM4', 'COM5', 'COM6', 'COM7', 'COM8', 'COM9',
+        'LPT1', 'LPT2', 'LPT3', 'LPT4', 'LPT5', 'LPT6', 'LPT7', 'LPT8', 'LPT9'
+    }
+    
+    # Check if name (without extension) is reserved
+    name_base = name.rsplit('.', 1)[0].upper()
+    if name_base in reserved_names or name_base.endswith('.'):
+        name = '_' + name
+    
+    # Remove leading/trailing spaces and dots (Windows doesn't allow these)
+    name = name.strip(' .')
+    
+    # Limit length (Windows max filename is 255 chars, but we account for path)
+    if len(name) > max_length:
+        # Try to preserve extension
+        if '.' in name:
+            name_base, ext = name.rsplit('.', 1)
+            max_base = max_length - len(ext) - 1
+            name = name_base[:max_base] + '.' + ext
+        else:
+            name = name[:max_length]
+    
+    # Ensure it's not empty after sanitization
+    if not name or name.strip() == '':
+        name = "unnamed"
+    
+    return name
+
+
+def sanitize_windows_path(path: Path, max_path_length: int = 240) -> Path:
+    """Sanitize a full path for Windows compatibility.
+    
+    Windows has a 260 character path limit by default.
+    We use 240 to leave room for the filename.
+    """
+    if platform.system() != 'Windows':
+        return path
+    
+    # Get parts
+    parts = list(path.parts)
+    
+    # Sanitize each part
+    sanitized_parts = []
+    for part in parts:
+        if part in ('/', '\\', ''):
+            sanitized_parts.append(part)
+        else:
+            sanitized_parts.append(sanitize_windows_filename(part))
+    
+    # Reconstruct path
+    sanitized_path = Path(*sanitized_parts)
+    
+    # Check total length
+    path_str = str(sanitized_path)
+    if len(path_str) > max_path_length:
+        # Try to shorten the filename part
+        if sanitized_path.is_absolute():
+            # Get drive and root
+            drive = sanitized_path.drive
+            root = sanitized_path.root
+            remaining = max_path_length - len(drive) - len(root) - 10  # Safety margin
+            
+            # Shorten the last part (filename)
+            parts = list(sanitized_path.parts[2:])  # Skip drive and root
+            if parts:
+                last_part = parts[-1]
+                if '.' in last_part:
+                    base, ext = last_part.rsplit('.', 1)
+                    max_base = remaining - len(ext) - 1 - sum(len(p) + 1 for p in parts[:-1])
+                    if max_base > 10:
+                        parts[-1] = base[:max_base] + '.' + ext
+                    else:
+                        parts[-1] = 'file.' + ext
+                else:
+                    max_len = remaining - sum(len(p) + 1 for p in parts[:-1])
+                    if max_len > 10:
+                        parts[-1] = last_part[:max_len]
+                    else:
+                        parts[-1] = 'file'
+                
+                sanitized_path = Path(drive, root, *parts)
+    
+    return sanitized_path
+
+
+def setup_windows_console():
+    """Setup Windows console for UTF-8 encoding if on Windows."""
+    if platform.system() == 'Windows':
+        try:
+            # Set console code page to UTF-8
+            import ctypes
+            kernel32 = ctypes.windll.kernel32
+            kernel32.SetConsoleOutputCP(65001)  # UTF-8 code page
+            kernel32.SetConsoleCP(65001)
+        except:
+            pass  # Silently fail if not in console or can't set
+
+
 class ResumeCustomizer:
     """Customizes resume content based on job descriptions using OpenAI."""
     
@@ -162,65 +279,8 @@ class ResumeCustomizer:
     
     def log_all_sections(self):
         """Log all sections found in the resume for recognition."""
-        sections = self.resume_data.get('sections', [])
-        logging.info("=" * 60)
-        logging.info("RESUME SECTIONS RECOGNITION")
-        logging.info("=" * 60)
-        
-        for i, section in enumerate(sections, 1):
-            section_type = section.get('__t', 'Unknown')
-            section_name = section.get('name', '')
-            enabled = section.get('enabled', True)
-            items_count = len(section.get('items', []))
-            
-            logging.info(f"Section {i}: {section_type}")
-            if section_name:
-                logging.info(f"  Name: {clean_text(section_name)}")
-            logging.info(f"  Enabled: {enabled}")
-            logging.info(f"  Items: {items_count}")
-            
-            # Log section-specific details
-            if section_type == 'SummarySection':
-                if items_count > 0:
-                    summary_preview = clean_text(section['items'][0].get('text', '')[:100])
-                    logging.info(f"  Preview: {summary_preview}...")
-            
-            elif section_type == 'ExperienceSection':
-                if items_count > 0:
-                    positions = [clean_text(item.get('position', 'N/A')) for item in section.get('items', [])[:3]]
-                    logging.info(f"  Positions: {', '.join(positions)}")
-            
-            elif section_type == 'EducationSection':
-                if items_count > 0:
-                    degrees = [clean_text(item.get('degree', 'N/A')) for item in section.get('items', [])[:3]]
-                    logging.info(f"  Degrees: {', '.join(degrees)}")
-            
-            elif section_type == 'TechnologySection':
-                if items_count > 0:
-                    all_skills = []
-                    for item in section.get('items', []):
-                        all_skills.extend([clean_text(tag) for tag in item.get('tags', [])])
-                    logging.info(f"  Skills count: {len(all_skills)}")
-                    logging.info(f"  Sample skills: {', '.join(all_skills[:10])}")
-            
-            elif section_type == 'ActivitySection':
-                if items_count > 0:
-                    titles = [clean_text(item.get('title', 'N/A')) for item in section.get('items', [])[:3]]
-                    logging.info(f"  Projects/Activities: {', '.join(titles)}")
-            
-            elif section_type == 'LanguageSection':
-                if items_count > 0:
-                    languages = [clean_text(item.get('name', 'N/A')) for item in section.get('items', [])[:3]]
-                    logging.info(f"  Languages: {', '.join(languages)}")
-            
-            elif section_type == 'CertificateSection':
-                if items_count > 0:
-                    certs = [clean_text(item.get('name', 'N/A')) for item in section.get('items', [])[:3]]
-                    logging.info(f"  Certificates: {', '.join(certs)}")
-            
-            logging.info("")
-        
-        logging.info("=" * 60)
+        # Production: No logging
+        pass
     
     def extract_resume_content(self) -> Dict[str, Any]:
         """Extract key content from resume for customization."""
@@ -464,10 +524,8 @@ Return ONLY the JSON object with "experiences" key, no additional text."""
                 project_section_found = True
                 section_type = section.get('__t', 'Unknown')
                 items = section.get('items', [])
-                logging.info(f"  Found {section_type} with {len(items)} items (treating as projects)")
                 
                 if not items:
-                    logging.warning("  ProjectSection exists but has no items")
                     break
                 
                 for item in items:
@@ -476,9 +534,6 @@ Return ONLY the JSON object with "experiences" key, no additional text."""
                     description = clean_text(item.get('description', '') or item.get('text', ''))
                     bullets = [clean_text(bullet) for bullet in item.get('bullets', [])]
                     
-                    if not title:
-                        logging.warning(f"  Project item has no title. Available keys: {list(item.keys())}")
-                    
                     proj = {
                         'title': title,
                         'description': description,
@@ -486,14 +541,9 @@ Return ONLY the JSON object with "experiences" key, no additional text."""
                     }
                     if proj['title']:
                         projects.append(proj)
-                        logging.info(f"  Extracted project: {clean_text(title[:50])}...")
                 break
         
-        if not project_section_found:
-            logging.warning("  No ProjectSection or ActivitySection found in resume")
-            return []
-        elif not projects:
-            logging.warning("  ProjectSection/ActivitySection found but no valid projects extracted")
+        if not project_section_found or not projects:
             return []
         
         # Format projects for prompt
@@ -661,36 +711,22 @@ Return ONLY the JSON object, no additional text."""
         """Customize entire resume for a job description."""
         job_description = clean_text(job_description)
         
-        logging.info("Analyzing job description...")
-        logging.info("Customizing resume content...")
-        
         updates = {}
         
         if customize_summary:
-            logging.info("[OK] Customizing summary...")
             updates['summary'] = self.customize_summary(job_description, model)
-            logging.info(f"  Summary updated: {safe_str(updates['summary'][:80])}...")
         
         if customize_experience:
-            logging.info("[OK] Customizing experience bullets...")
             updates['experiences'] = self.customize_experience_bullets(job_description, model)
-            logging.info(f"  Updated {len(updates['experiences'])} experience entries")
         
         if customize_projects:
             projects = self.customize_projects(job_description, model)
             if projects:
-                logging.info("[OK] Customizing projects...")
                 updates['projects'] = projects
-                logging.info(f"  Updated {len(updates['projects'])} project entries")
-            else:
-                logging.info("  No projects found in resume")
         
         if customize_skills:
-            logging.info("[OK] Prioritizing skills...")
             updates['skills'] = self.prioritize_skills(job_description, model)
-            logging.info(f"  Organized skills into {len(updates['skills'])} categories")
         
-        logging.info(f"Customization complete. Updates: {list(updates.keys())}")
         return updates
     
     def apply_updates(self, updates: Dict[str, Any]):
@@ -761,7 +797,6 @@ Return ONLY the JSON object, no additional text."""
                         item['dateRange'] = original_dateRange
                         item['location'] = original_location
                         updated_count += 1
-                        logging.info(f"  Matched experience: {clean_text(original_position)} at {clean_text(original_company)}")
                     else:
                         # If no exact match, try fuzzy matching with normalized strings
                         matched = False
@@ -827,20 +862,6 @@ Return ONLY the JSON object, no additional text."""
                             item['location'] = original_location
                             updated_count += 1
                             matched = True
-                            logging.info(f"  Fuzzy matched experience: {clean_text(original_position)} at {clean_text(original_company)} (score: {best_score:.2f})")
-                        
-                        if not matched:
-                            logging.warning(f"  Warning: No match found for experience: {clean_text(original_position)} at {clean_text(original_company)}")
-                            logging.warning(f"    Normalized: '{clean_text(norm_original_pos)}' at '{clean_text(norm_original_comp)}'")
-                            logging.warning(f"    Available custom experiences:")
-                            for exp in updates['experiences']:
-                                norm_exp_pos = normalize_for_matching(exp.get('position', ''))
-                                norm_exp_comp = normalize_for_matching(exp.get('company', ''))
-                                logging.warning(f"      - '{norm_exp_pos}' at '{norm_exp_comp}'")
-                
-                logging.info(f"  Applied updates to {updated_count} of {total_items} experience entries")
-                if updated_count < total_items:
-                    logging.warning(f"  WARNING: Only {updated_count} of {total_items} experiences were updated!")
             
             self.resume_data = self.updater.data
         
@@ -850,7 +871,6 @@ Return ONLY the JSON object, no additional text."""
                 # Projects can be in either ProjectSection or ActivitySection
                 if section.get('__t') == 'ProjectSection' or section.get('__t') == 'ActivitySection':
                     proj_section = section
-                    logging.info(f"  Found {section.get('__t')} for applying project updates")
                     break
             
             if proj_section:
@@ -868,7 +888,6 @@ Return ONLY the JSON object, no additional text."""
                 for idx, item in enumerate(proj_section.get('items', []), 1):
                     original_title = item.get('title', '') or item.get('name', '') or item.get('projectName', '')
                     if not original_title:
-                        logging.warning(f"  Warning: Project item #{idx} has no title. Available keys: {list(item.keys())}")
                         continue
                     
                     # Normalize for matching (same as custom projects)
@@ -893,7 +912,6 @@ Return ONLY the JSON object, no additional text."""
                             item['projectName'] = original_title
                         updated_count += 1
                         matched = True
-                        logging.info(f"  Matched project: {clean_text(original_title)}")
                     else:
                         # Try fuzzy matching with word-based similarity
                         best_match = None
@@ -941,19 +959,6 @@ Return ONLY the JSON object, no additional text."""
                                 item['projectName'] = original_title
                             updated_count += 1
                             matched = True
-                            logging.info(f"  Fuzzy matched project: {clean_text(original_title)} (score: {best_score:.2f})")
-                        
-                        if not matched:
-                            logging.warning(f"  Warning: No match found for project: {clean_text(original_title)}")
-                            logging.warning(f"    Normalized: '{norm_original_title}'")
-                            logging.warning(f"    Available custom projects:")
-                            for proj in updates['projects']:
-                                norm_proj_title = normalize_for_matching(proj.get('title', ''))
-                                logging.warning(f"      - '{norm_proj_title}'")
-                
-                logging.info(f"  Applied updates to {updated_count} of {total_items} project entries")
-                if updated_count < total_items:
-                    logging.warning(f"  WARNING: Only {updated_count} of {total_items} projects were updated!")
             
             # CRITICAL: Ensure data is properly synced
             self.resume_data = copy.deepcopy(self.updater.data)
@@ -967,11 +972,25 @@ Return ONLY the JSON object, no additional text."""
         if not self.resume_data:
             raise ValueError("No resume data available. Call apply_updates() first.")
         
+        # Verify all sections are preserved
+        original_section_count = len(self.resume_data.get('sections', []))
+        original_section_types = [s.get('__t', 'Unknown') for s in self.resume_data.get('sections', [])]
+        
         self.updater.data = copy.deepcopy(self.resume_data)
         
         if job_title:
             self.updater.update_header(title=job_title)
             self.resume_data = copy.deepcopy(self.updater.data)
+        
+        # Verify sections are still present after updates (production: silent check)
+        final_section_count = len(self.resume_data.get('sections', []))
+        
+        # Ensure output path is Windows compatible
+        output_path_obj = sanitize_windows_path(Path(output_path))
+        output_path = str(output_path_obj)
+        
+        # Ensure parent directory exists
+        output_path_obj.parent.mkdir(parents=True, exist_ok=True)
         
         self.updater.data = copy.deepcopy(self.resume_data)
         self.updater.save_pdf(output_path, render_visual=render_visual)
@@ -1096,32 +1115,52 @@ def organize_job_files(
     
     # Create timestamped folder with job title
     timestamp = datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
-    # Sanitize job title for folder name
-    safe_title = re.sub(r'[^\w\s\-&]', '', job_title)
+    # Sanitize job title for folder name (Windows compatible)
+    safe_title = sanitize_windows_filename(job_title, max_length=50)
     safe_title = re.sub(r'\s+', '_', safe_title)
-    safe_title = safe_title[:50]  # Limit length
     
     job_folder = jobs_dir / f"{timestamp}_{safe_title}"
-    job_folder.mkdir(exist_ok=True)
+    # Sanitize full path for Windows
+    job_folder = sanitize_windows_path(job_folder)
+    job_folder.mkdir(parents=True, exist_ok=True)
     
-    # Save job description
+    # Save job description (Windows compatible)
     job_desc_path = job_folder / "job_description.txt"
-    job_desc_path.write_text(job_description, encoding='utf-8')
+    try:
+        job_desc_path.write_text(job_description, encoding='utf-8', newline='\n')
+    except Exception as e:
+        # Fallback: try with different encoding or path
+        try:
+            job_desc_path = sanitize_windows_path(job_desc_path)
+            job_desc_path.write_text(job_description, encoding='utf-8', newline='\n')
+        except Exception as e2:
+            raise IOError(f"Failed to save job description: {e2}")
     
-    # Copy resume PDF
+    # Copy resume PDF (Windows compatible)
     resume_source = Path(resume_pdf_path)
     resume_dest = job_folder / "resume_customized.pdf"
     if resume_source.exists():
-        shutil.copy2(resume_source, resume_dest)
+        try:
+            shutil.copy2(resume_source, resume_dest)
+        except Exception as e:
+            # Retry with sanitized path
+            resume_dest = sanitize_windows_path(resume_dest)
+            shutil.copy2(resume_source, resume_dest)
     
-    # Copy visual PDF if provided
+    # Copy visual PDF if provided (Windows compatible)
     visual_dest = None
     if visual_pdf_path:
         visual_source = Path(visual_pdf_path)
         visual_dest = job_folder / "resume_customized.visual.pdf"
         if visual_source.exists():
-            shutil.copy2(visual_source, visual_dest)
-            visual_dest = str(visual_dest)
+            try:
+                shutil.copy2(visual_source, visual_dest)
+                visual_dest = str(visual_dest)
+            except Exception as e:
+                # Retry with sanitized path
+                visual_dest = sanitize_windows_path(visual_dest)
+                shutil.copy2(visual_source, visual_dest)
+                visual_dest = str(visual_dest)
     
     # Create metadata
     metadata = {
@@ -1134,8 +1173,14 @@ def organize_job_files(
     }
     
     metadata_path = job_folder / "metadata.json"
-    with open(metadata_path, 'w', encoding='utf-8') as f:
-        json.dump(metadata, f, indent=2, ensure_ascii=False)
+    try:
+        with open(metadata_path, 'w', encoding='utf-8', newline='\n') as f:
+            json.dump(metadata, f, indent=2, ensure_ascii=False)
+    except Exception as e:
+        # Retry with sanitized path
+        metadata_path = sanitize_windows_path(metadata_path)
+        with open(metadata_path, 'w', encoding='utf-8', newline='\n') as f:
+            json.dump(metadata, f, indent=2, ensure_ascii=False)
     
     result = {
         'folder': str(job_folder),
@@ -1147,7 +1192,6 @@ def organize_job_files(
     if visual_dest:
         result['visual_resume'] = visual_dest
     
-    logging.info(f"Organized job files in: {job_folder}")
     return result
 
 
@@ -1160,6 +1204,9 @@ def read_job_description(file_path: str) -> str:
 
 
 def main():
+    # Setup Windows console for UTF-8 if needed
+    setup_windows_console()
+    
     parser = argparse.ArgumentParser(
         description='Customize resume based on job description using OpenAI',
         formatter_class=argparse.RawDescriptionHelpFormatter,

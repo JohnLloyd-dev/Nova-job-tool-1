@@ -280,7 +280,14 @@ class PDFResumeUpdater:
         if not self.data:
             raise ValueError("No data to save. Extract or update data first.")
         
-        output_path = output_path or self.pdf_path
+        # Convert to Path and ensure Windows compatibility
+        if output_path:
+            output_path = Path(output_path)
+        else:
+            output_path = self.pdf_path
+        
+        # Ensure parent directory exists
+        output_path.parent.mkdir(parents=True, exist_ok=True)
         
         try:
             # Read original PDF
@@ -328,9 +335,17 @@ class PDFResumeUpdater:
                 else:
                     raise ValueError("Could not find /ecv-data field in PDF")
             
-            # Write updated PDF
-            with open(output_path, 'wb') as f:
-                f.write(new_content)
+            # Write updated PDF (Windows compatible)
+            try:
+                with open(output_path, 'wb') as f:
+                    f.write(new_content)
+            except (PermissionError, OSError) as e:
+                # Windows file locking or permission issue
+                raise RuntimeError(
+                    f"Cannot write to {output_path}. "
+                    f"File may be open in another program or you may not have write permissions. "
+                    f"Error: {e}"
+                )
             
             print(f"Successfully saved updated PDF to: {output_path}")
             
@@ -371,8 +386,18 @@ class PDFResumeUpdater:
         if not self.data:
             self.extract_json_data()
         
-        with open(output_path, 'w', encoding='utf-8') as f:
-            json.dump(self.data, f, indent=2, ensure_ascii=False)
+        output_path = Path(output_path)
+        output_path.parent.mkdir(parents=True, exist_ok=True)
+        
+        try:
+            with open(output_path, 'w', encoding='utf-8', newline='\n') as f:
+                json.dump(self.data, f, indent=2, ensure_ascii=False)
+        except (PermissionError, OSError) as e:
+            raise RuntimeError(
+                f"Cannot write to {output_path}. "
+                f"File may be open in another program or you may not have write permissions. "
+                f"Error: {e}"
+            )
         
         print(f"Exported JSON data to: {output_path}")
 
