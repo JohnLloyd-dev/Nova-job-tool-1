@@ -173,47 +173,47 @@ class ResumeCustomizer:
             
             logging.info(f"Section {i}: {section_type}")
             if section_name:
-                logging.info(f"  Name: {section_name}")
+                logging.info(f"  Name: {clean_text(section_name)}")
             logging.info(f"  Enabled: {enabled}")
             logging.info(f"  Items: {items_count}")
             
             # Log section-specific details
             if section_type == 'SummarySection':
                 if items_count > 0:
-                    summary_preview = section['items'][0].get('text', '')[:100]
+                    summary_preview = clean_text(section['items'][0].get('text', '')[:100])
                     logging.info(f"  Preview: {summary_preview}...")
             
             elif section_type == 'ExperienceSection':
                 if items_count > 0:
-                    positions = [item.get('position', 'N/A') for item in section.get('items', [])[:3]]
+                    positions = [clean_text(item.get('position', 'N/A')) for item in section.get('items', [])[:3]]
                     logging.info(f"  Positions: {', '.join(positions)}")
             
             elif section_type == 'EducationSection':
                 if items_count > 0:
-                    degrees = [item.get('degree', 'N/A') for item in section.get('items', [])[:3]]
+                    degrees = [clean_text(item.get('degree', 'N/A')) for item in section.get('items', [])[:3]]
                     logging.info(f"  Degrees: {', '.join(degrees)}")
             
             elif section_type == 'TechnologySection':
                 if items_count > 0:
                     all_skills = []
                     for item in section.get('items', []):
-                        all_skills.extend(item.get('tags', []))
+                        all_skills.extend([clean_text(tag) for tag in item.get('tags', [])])
                     logging.info(f"  Skills count: {len(all_skills)}")
                     logging.info(f"  Sample skills: {', '.join(all_skills[:10])}")
             
             elif section_type == 'ActivitySection':
                 if items_count > 0:
-                    titles = [item.get('title', 'N/A') for item in section.get('items', [])[:3]]
+                    titles = [clean_text(item.get('title', 'N/A')) for item in section.get('items', [])[:3]]
                     logging.info(f"  Projects/Activities: {', '.join(titles)}")
             
             elif section_type == 'LanguageSection':
                 if items_count > 0:
-                    languages = [item.get('name', 'N/A') for item in section.get('items', [])[:3]]
+                    languages = [clean_text(item.get('name', 'N/A')) for item in section.get('items', [])[:3]]
                     logging.info(f"  Languages: {', '.join(languages)}")
             
             elif section_type == 'CertificateSection':
                 if items_count > 0:
-                    certs = [item.get('name', 'N/A') for item in section.get('items', [])[:3]]
+                    certs = [clean_text(item.get('name', 'N/A')) for item in section.get('items', [])[:3]]
                     logging.info(f"  Certificates: {', '.join(certs)}")
             
             logging.info("")
@@ -511,7 +511,7 @@ Return ONLY the JSON object with "experiences" key, no additional text."""
                     }
                     if proj['title']:
                         projects.append(proj)
-                        logging.info(f"  Extracted project: {title[:50]}...")
+                        logging.info(f"  Extracted project: {clean_text(title[:50])}...")
                 break
         
         if not project_section_found:
@@ -786,7 +786,7 @@ Return ONLY the JSON object, no additional text."""
                         item['dateRange'] = original_dateRange
                         item['location'] = original_location
                         updated_count += 1
-                        logging.info(f"  Matched experience: {original_position} at {original_company}")
+                        logging.info(f"  Matched experience: {clean_text(original_position)} at {clean_text(original_company)}")
                     else:
                         # If no exact match, try fuzzy matching with normalized strings
                         matched = False
@@ -852,11 +852,11 @@ Return ONLY the JSON object, no additional text."""
                             item['location'] = original_location
                             updated_count += 1
                             matched = True
-                            logging.info(f"  Fuzzy matched experience: {original_position} at {original_company} (score: {best_score:.2f})")
+                            logging.info(f"  Fuzzy matched experience: {clean_text(original_position)} at {clean_text(original_company)} (score: {best_score:.2f})")
                         
                         if not matched:
-                            logging.warning(f"  Warning: No match found for experience: {original_position} at {original_company}")
-                            logging.warning(f"    Normalized: '{norm_original_pos}' at '{norm_original_comp}'")
+                            logging.warning(f"  Warning: No match found for experience: {clean_text(original_position)} at {clean_text(original_company)}")
+                            logging.warning(f"    Normalized: '{clean_text(norm_original_pos)}' at '{clean_text(norm_original_comp)}'")
                             logging.warning(f"    Available custom experiences:")
                             for exp in updates['experiences']:
                                 norm_exp_pos = normalize_for_matching(exp.get('position', ''))
