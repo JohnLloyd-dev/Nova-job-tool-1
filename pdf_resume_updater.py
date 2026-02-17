@@ -10,8 +10,18 @@ import json
 import re
 import sys
 from pathlib import Path
-from typing import Dict, Any, Optional, List
+from typing import Dict, Any, Optional, List, Tuple
 import argparse
+
+
+def _safe_print(*args, **kwargs):
+    """Print that never raises UnicodeEncodeError on Windows (charmap)."""
+    try:
+        print(*args, **kwargs)
+    except UnicodeEncodeError:
+        # Fallback: replace non-ASCII so console/pipe can display
+        safe_args = (str(a).encode('ascii', errors='replace').decode('ascii') for a in args)
+        print(*safe_args, **kwargs)
 
 
 class PDFResumeUpdater:
@@ -225,6 +235,14 @@ class PDFResumeUpdater:
         
         exp_section['items'].append(exp_item)
     
+    @staticmethod
+    def _section_has_skill_items(section: dict) -> bool:
+        """True if section has skill-like items (items with 'tags' list)."""
+        for item in section.get('items', []):
+            if 'tags' in item and isinstance(item.get('tags'), list):
+                return True
+        return False
+    
     def update_skills(self, skill_groups: Dict[str, List[str]]):
         """Update skills section.
         
@@ -235,10 +253,10 @@ class PDFResumeUpdater:
         if not self.data:
             self.extract_json_data()
         
-        # Find or create technology section
+        # Find section by content (items with 'tags'), not by __t
         tech_section = None
         for section in self.data.get('sections', []):
-            if section.get('__t') == 'TechnologySection':
+            if self._section_has_skill_items(section):
                 tech_section = section
                 break
         
@@ -270,15 +288,22 @@ class PDFResumeUpdater:
             }
             tech_section['items'].append(tech_item)
     
-    def save_pdf(self, output_path: Optional[str] = None, render_visual: bool = False):
+    def save_pdf(self, output_path: Optional[str] = None, render_visual: bool = False) -> Tuple[Optional[str], Optional[str]]:
         """Save the updated data back to PDF.
         
         Args:
             output_path: Output file path
             render_visual: If True, also render a new visual PDF (requires pdf_renderer)
+        
+        Returns:
+            (visual_path, visual_error): Path to visual PDF if created, else None;
+            error message if visual rendering failed, else None.
         """
         if not self.data:
             raise ValueError("No data to save. Extract or update data first.")
+        
+        visual_path_result: Optional[str] = None
+        visual_error_result: Optional[str] = None
         
         # Convert to Path and ensure Windows compatibility
         if output_path:
@@ -347,7 +372,7 @@ class PDFResumeUpdater:
                     f"Error: {e}"
                 )
             
-            print(f"Successfully saved updated PDF to: {output_path}")
+            _safe_print(f"Successfully saved updated PDF to: {output_path}")
             
             # Optionally render visual PDF
             if render_visual:
@@ -370,16 +395,30 @@ class PDFResumeUpdater:
                     renderer = PDFRenderer(data_for_renderer)
                     
                     renderer.render_pdf(visual_path)
-                    print(f"✅ Rendered visual PDF to: {visual_path}")
-                except ImportError:
-                    print("⚠️  Visual rendering not available. Install: pip install weasyprint")
+                    visual_path_result = visual_path
+                    _safe_print(f"Rendered visual PDF to: {visual_path}")
+                except ImportError as e:
+                    visual_error_result = "Visual PDF not available (install weasyprint or reportlab)."
+                    _safe_print("Visual rendering not available. Install: pip install weasyprint")
                 except Exception as e:
-                    print(f"⚠️  Visual rendering failed: {e}")
+                    visual_error_result = str(e)
+                    _safe_print(f"Visual rendering failed: {e}")
                     import traceback
-                    traceback.print_exc()
+                    try:
+                        traceback.print_exc()
+                    except UnicodeEncodeError:
+                        _safe_print("Visual rendering failed (see error above)")
             
         except Exception as e:
-            raise RuntimeError(f"Error saving PDF: {e}")
+            # Use ASCII-safe message so GUI/console on Windows never hits charmap
+            err_msg = str(e)
+            try:
+                err_msg.encode('ascii')
+            except UnicodeEncodeError:
+                err_msg = err_msg.encode('ascii', errors='replace').decode('ascii')
+            raise RuntimeError(f"Error saving PDF: {err_msg}")
+        
+        return (visual_path_result, visual_error_result)
     
     def export_json(self, output_path: str):
         """Export the resume data as JSON for inspection."""

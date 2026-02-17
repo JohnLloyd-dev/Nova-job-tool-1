@@ -7,6 +7,7 @@ Analyzes job requirements and tailors resume sections to match perfectly.
 """
 
 import json
+import logging
 import os
 import sys
 import copy
@@ -17,6 +18,21 @@ from typing import Dict, Any, List, Optional
 import argparse
 import re
 from datetime import datetime
+
+# Detailed debug logger (writes to resume_customizer_debug.log in script dir)
+_log = logging.getLogger("resume_customizer")
+def _ensure_debug_log():
+    if _log.handlers:
+        return
+    _log.setLevel(logging.DEBUG)
+    base = Path(__file__).resolve().parent
+    try:
+        h = logging.FileHandler(base / "resume_customizer_debug.log", encoding="utf-8")
+    except Exception:
+        h = logging.StreamHandler(sys.stderr)
+    h.setLevel(logging.DEBUG)
+    h.setFormatter(logging.Formatter("%(asctime)s - %(levelname)s - %(message)s"))
+    _log.addHandler(h)
 
 try:
     from openai import OpenAI
@@ -167,11 +183,14 @@ def sanitize_windows_path(path: Path, max_path_length: int = 240) -> Path:
     
     # Get parts
     parts = list(path.parts)
-    
-    # Sanitize each part
+    drive_root = (path.drive + path.root) if path.drive else None
+
+    # Sanitize each part (do not sanitize drive+root on Windows, e.g. 'C:\')
     sanitized_parts = []
-    for part in parts:
+    for i, part in enumerate(parts):
         if part in ('/', '\\', ''):
+            sanitized_parts.append(part)
+        elif drive_root and part == drive_root:
             sanitized_parts.append(part)
         else:
             sanitized_parts.append(sanitize_windows_filename(part))
@@ -282,30 +301,85 @@ class ResumeCustomizer:
         # Production: No logging
         pass
     
+    @staticmethod
+    def _section_has_summary_items(section: Dict[str, Any]) -> bool:
+        """True if section has summary-like items (items with 'text')."""
+        for item in section.get('items', []):
+            if item.get('text') is not None or (isinstance(item.get('text'), str) and item.get('text') != ''):
+                return True
+            if 'text' in item:
+                return True
+        return False
+    
+    @staticmethod
+    def _section_has_experience_items(section: Dict[str, Any]) -> bool:
+        """True if section has experience-like items (position/workplace or title/company + bullets)."""
+        for item in section.get('items', []):
+            has_role = 'position' in item or 'title' in item
+            has_company = 'workplace' in item or 'company' in item
+            if (has_role or has_company) and isinstance(section.get('items'), list):
+                return True
+        return False
+    
+    @staticmethod
+    def _section_has_project_items(section: Dict[str, Any]) -> bool:
+        """True if section has project-like items: at least one item with title/name/projectName (so Summary is excluded)."""
+        for item in section.get('items', []):
+            has_title = any(
+                item.get(k) and str(item.get(k)).strip()
+                for k in ('title', 'name', 'projectName')
+            )
+            if has_title:
+                return True
+        return False
+    
+    @staticmethod
+    def _section_has_skill_items(section: Dict[str, Any]) -> bool:
+        """True if section has skill-like items (items with 'tags')."""
+        for item in section.get('items', []):
+            if 'tags' in item and isinstance(item.get('tags'), list):
+                return True
+        return False
+    
+    @staticmethod
+    def _normalize_project_title(raw: str) -> str:
+        """Strip leading list markers / stray chars so titles render correctly in PDF."""
+        if not raw or not isinstance(raw, str):
+            return raw or ""
+        s = raw.strip()
+        s = re.sub(r'^\s*\d+\.\s*', '', s)
+        s = re.sub(r'^[•\-–—]\s*', '', s)
+        if len(s) > 2 and s[1] in (' ', '\t') and (
+            s[0] in ('n', 'N') or (len(s) > 2 and s[2:3] and s[2].isupper())
+        ):
+            s = s[2:].lstrip()
+        return s.strip()
+    
     def extract_resume_content(self) -> Dict[str, Any]:
         """Extract key content from resume for customization."""
         self.load_resume_data()
         
         header = self.resume_data.get('header', {})
         
-        # Extract summary
+        # Extract summary (find section by content: items with 'text')
         summary = ""
         for section in self.resume_data.get('sections', []):
-            if section.get('__t') == 'SummarySection':
+            if self._section_has_summary_items(section):
                 if section.get('items'):
                     summary = section['items'][0].get('text', '')
                 break
-        
         summary = clean_text(summary)
         
-        # Extract experiences
+        # Extract experiences (find section by content: items with position/workplace or title/company)
         experiences = []
         for section in self.resume_data.get('sections', []):
-            if section.get('__t') == 'ExperienceSection':
+            if self._section_has_experience_items(section):
                 for item in section.get('items', []):
+                    pos = item.get('position', '') or item.get('title', '')
+                    comp = item.get('workplace', '') or item.get('company', '')
                     exp = {
-                        'position': clean_text(item.get('position', '')),
-                        'company': clean_text(item.get('workplace', '')),
+                        'position': clean_text(pos),
+                        'company': clean_text(comp),
                         'location': clean_text(item.get('location', '')),
                         'dateRange': item.get('dateRange', {}),
                         'bullets': [clean_text(bullet) for bullet in item.get('bullets', [])]
@@ -313,15 +387,15 @@ class ResumeCustomizer:
                     experiences.append(exp)
                 break
         
-        # Extract skills
+        # Extract skills (find section by content: items with 'tags')
         skills = []
         for section in self.resume_data.get('sections', []):
-            if section.get('__t') == 'TechnologySection':
+            if self._section_has_skill_items(section):
                 for item in section.get('items', []):
                     skills.extend([clean_text(tag) for tag in item.get('tags', [])])
                 break
         
-        # Extract education
+        # Extract education (use __t for education; schema is stable)
         education = []
         for section in self.resume_data.get('sections', []):
             if section.get('__t') == 'EducationSection':
@@ -362,7 +436,7 @@ class ResumeCustomizer:
         clean_summary = clean_text(resume_content['summary'])
         clean_job_desc = clean_text(job_description)
         
-        prompt = f"""You are an expert resume writer specializing in ATS optimization. Your task is to COMPLETELY match the summary to the job description by using the exact keywords, phrases, and requirements from the job description.
+        prompt = f"""You are an expert resume writer. The resume must PERFECTLY match the job description. Your task is to rewrite the summary so it meets ALL requirements of the job description.
 
 Current Summary:
 {clean_summary}
@@ -370,23 +444,18 @@ Current Summary:
 Job Description:
 {clean_job_desc}
 
-CRITICAL INSTRUCTIONS:
-1. COMPLETELY rewrite the summary to match the job description - use the exact same keywords, technologies, and requirements mentioned in the job
-2. Extract ALL key requirements from the job description (technologies, skills, responsibilities, qualifications) and incorporate them into the summary
-3. Use the EXACT same terminology from the job description (e.g., if job says ".NET Core", use ".NET Core" not ".NET")
-4. Highlight experience and skills that DIRECTLY match what the job is asking for
-5. Make the summary sound like it was written specifically for THIS job
-6. Keep the summary concise but comprehensive - aim for 3-4 sentences (80-120 words) to include key keywords and requirements
-7. Be selective - include the most important technologies, skills, and achievements mentioned in the job
-8. IMPORTANT: You MUST preserve the experience years exactly as "{experience_years}" if it appears in the original summary. Do NOT change the number of years of experience.
-9. Keep all information truthful - only rephrase existing experience, don't invent new experience
-10. Remove ALL HTML tags like <strong> - return plain text only
-11. The summary must read as if the candidate is a PERFECT match for this specific job
+CRITICAL - PERFECT MATCH WITH JOB:
+1. The summary must meet ALL key requirements of the job (technologies, skills, responsibilities) using the EXACT same wording as the job - but do NOT downgrade the candidate's level.
+2. If the job is junior or mid-level, do NOT make the summary sound junior. Always present the profile as professionally as possible: preserve the candidate's actual seniority, leadership, and scope. A senior candidate applying to a junior role should still sound senior and professional.
+3. Extract requirements from the job (technologies, methodologies, role type) and address them with exact keywords - never reduce or tone down the candidate's experience level to match the job level.
+4. Use the EXACT terminology from the job (e.g. ".NET Core", "Azure", "microservices"). Keep the summary concise - 3-4 sentences (80-120 words).
+5. Preserve the experience years exactly as "{experience_years}" if it appears in the original summary.
+6. Keep all information truthful - only rephrase existing experience; do not invent new experience. Remove ALL HTML tags - return plain text only.
 
 Return ONLY the customized summary text, no explanations or additional text."""
 
         prompt = clean_text(prompt)
-        system_message = clean_text("You are an expert resume writer specializing in ATS optimization and job matching.")
+        system_message = clean_text("You are an expert resume writer. Match the job's requirements and keywords, but never downgrade the candidate's level (e.g. if the job is junior, keep the profile senior and professional). Always present the profile as professionally as possible.")
         
         messages = [
             {"role": "system", "content": system_message},
@@ -432,7 +501,7 @@ Return ONLY the customized summary text, no explanations or additional text."""
         clean_job_desc = clean_text(job_description)
         clean_exp_text = clean_text(exp_text)
         
-        prompt = f"""You are an expert resume writer specializing in ATS optimization. Your task is to make the experience bullets RICHER, MORE DETAILED, and COMPLETELY match the job description requirements.
+        prompt = f"""You are an expert resume writer. The resume must PERFECTLY match the job description. Your task is to rewrite experience bullets so they meet ALL requirements of the job description.
 
 Job Description:
 {clean_job_desc}
@@ -440,18 +509,12 @@ Job Description:
 Current Experiences:
 {clean_exp_text}
 
-CRITICAL INSTRUCTIONS:
-1. For EACH experience, rewrite ALL bullet points to COMPLETELY match the job description requirements
-2. Use the EXACT keywords, technologies, and phrases from the job description (e.g., if job mentions ".NET Core", "Azure", "Microservices", use those exact terms)
-3. Make bullets concise but impactful - include key achievements with metrics and impact
-4. Each bullet should be 1 sentence with specific details, metrics, and impact (keep it brief)
-5. Extract the MOST relevant requirements from the job description and show how the experience matches them
-6. Use 3-4 bullets per experience (be selective, focus on quality over quantity)
-7. Quantify EVERYTHING: use numbers, percentages, dollar amounts, timeframes, team sizes, etc.
-8. Focus on results, impact, and achievements that directly relate to job requirements
-9. Keep all information truthful - only expand and rephrase existing achievements, don't invent new experience
-10. Each bullet should demonstrate a skill or achievement mentioned in the job description
-11. ABSOLUTELY CRITICAL: You MUST use the EXACT position name and company name as provided in "Current Experiences" above - DO NOT change, modify, abbreviate, or alter them in ANY way. Return them EXACTLY as they appear in the input.
+CRITICAL - PERFECT MATCH WITH JOB:
+1. The experience section must meet ALL key requirements of the job (technologies, responsibilities, qualifications) using the EXACT keywords from the job - but do NOT downgrade the candidate's level.
+2. If the job is junior or mid-level, do NOT make the experience sound junior. Always present the profile as professionally as possible: keep leadership, scope, ownership, and seniority. A senior candidate's bullets should still show senior/lead-level impact (e.g. led, architected, mentored) even when applying to a junior role.
+3. For EACH experience, write bullets that prove the candidate has what the job asks for - use EXACT keywords and phrases from the job. Do not tone down achievements or reduce responsibility level to match the job.
+4. Make bullets concise but impactful with metrics; each bullet 1 sentence. Use 3-4 bullets per experience. Keep all information truthful - only expand and rephrase existing achievements.
+5. ABSOLUTELY CRITICAL: Use the EXACT position name and company name from "Current Experiences" - DO NOT change them. Return them EXACTLY as in the input.
 
 Return results as a JSON object with "experiences" key containing an array:
    {{
@@ -467,7 +530,7 @@ Return results as a JSON object with "experiences" key containing an array:
 Return ONLY the JSON object with "experiences" key, no additional text."""
 
         prompt = clean_text(prompt)
-        system_message = clean_text("You are an expert resume writer. Always return valid JSON objects.")
+        system_message = clean_text("You are an expert resume writer. Match the job's requirements and keywords; never downgrade the candidate's level (e.g. keep senior/lead language even for junior roles). Always return valid JSON.")
         
         messages = [
             {"role": "system", "content": system_message},
@@ -510,42 +573,46 @@ Return ONLY the JSON object with "experiences" key, no additional text."""
     
     def customize_projects(self, job_description: str, model: str = "gpt-4o-mini") -> List[Dict[str, Any]]:
         """Customize project descriptions to match job description."""
+        _ensure_debug_log()
+        _log.debug("customize_projects: start")
         job_description = clean_text(job_description)
-        
-        # Extract projects from resume
+        if not self.resume_data:
+            _log.debug("customize_projects: resume_data was None, calling load_resume_data()")
+            self.load_resume_data()
+        num_sections = len(self.resume_data.get('sections', []))
+        _log.debug("customize_projects: resume_data has %s sections", num_sections)
+
+        # Extract projects from resume (use project NAME for title so API returns consistent titles)
         projects = []
         project_section_found = False
-        
-        # Sections are already logged in log_all_sections() when resume is loaded
-        
-        for section in self.resume_data.get('sections', []):
-            # Projects can be in either ProjectSection or ActivitySection
-            if section.get('__t') == 'ProjectSection' or section.get('__t') == 'ActivitySection':
+        for si, section in enumerate(self.resume_data.get('sections', [])):
+            if self._section_has_project_items(section):
                 project_section_found = True
-                section_type = section.get('__t', 'Unknown')
                 items = section.get('items', [])
-                
+                _log.debug("customize_projects: project section found at section index %s, items=%s", si, len(items))
                 if not items:
                     break
-                
                 for item in items:
-                    # Try multiple possible field names for project title
-                    title = clean_text(item.get('title', '') or item.get('name', '') or item.get('projectName', ''))
+                    # Prefer project name (projectName/name) over role (title) for stable matching
+                    project_name = clean_text(
+                        item.get('projectName', '') or item.get('name', '') or item.get('title', '')
+                    )
                     description = clean_text(item.get('description', '') or item.get('text', ''))
                     bullets = [clean_text(bullet) for bullet in item.get('bullets', [])]
-                    
-                    proj = {
-                        'title': title,
-                        'description': description,
-                        'bullets': bullets
-                    }
+                    proj = {'title': project_name, 'description': description, 'bullets': bullets}
                     if proj['title']:
                         projects.append(proj)
+                        _log.debug("customize_projects: extracted project title=%r (desc len=%s, bullets=%s)",
+                                   proj['title'][:60], len(description), len(bullets))
                 break
-        
+
+        if not project_section_found:
+            _log.debug("customize_projects: no project section found ( _section_has_project_items False for all)")
+        if not projects:
+            _log.debug("customize_projects: no projects extracted, returning []")
         if not project_section_found or not projects:
             return []
-        
+
         # Format projects for prompt
         proj_text = ""
         for i, proj in enumerate(projects, 1):
@@ -560,7 +627,7 @@ Return ONLY the JSON object with "experiences" key, no additional text."""
         clean_job_desc = clean_text(job_description)
         clean_proj_text = clean_text(proj_text)
         
-        prompt = f"""You are an expert resume writer specializing in ATS optimization. Your task is to make project descriptions RICHER, MORE DETAILED, and COMPLETELY match the job description requirements.
+        prompt = f"""You are an expert resume writer. The resume must PERFECTLY match the job description. Your task is to rewrite project descriptions and bullets so they meet ALL requirements of the job description.
 
 Job Description:
 {clean_job_desc}
@@ -568,17 +635,12 @@ Job Description:
 Current Projects:
 {clean_proj_text}
 
-CRITICAL INSTRUCTIONS:
-1. For EACH project, rewrite ALL bullet points and descriptions to COMPLETELY match the job description requirements
-2. Use the EXACT keywords, technologies, and phrases from the job description
-3. Make descriptions concise but impactful - include key achievements with metrics and impact
-4. Each bullet should be 1 sentence with specific details, metrics, and impact
-5. Extract the MOST relevant requirements from the job description and show how the project matches them
-6. Use 3-4 bullets per project (be selective, focus on quality over quantity)
-7. Quantify EVERYTHING: use numbers, percentages, dollar amounts, timeframes, team sizes, etc.
-8. Focus on results, impact, and achievements that directly relate to job requirements
-9. Keep all information truthful - only expand and rephrase existing achievements
-10. ABSOLUTELY CRITICAL: You MUST use the EXACT project title as provided in "Current Projects" above - DO NOT change, modify, abbreviate, or alter it in ANY way.
+CRITICAL - PERFECT MATCH WITH JOB:
+1. The projects section must meet ALL key requirements of the job (technologies, outcomes) using the EXACT keywords from the job - but do NOT downgrade the candidate's level.
+2. If the job is junior or mid-level, do NOT make projects sound junior. Present the profile as professionally as possible: keep scope, ownership, and impact (e.g. led, architected, delivered). Do not reduce the level of responsibility to match the job.
+3. For EACH project, write description and bullets that demonstrate what the job asks for with exact keywords - without toning down the candidate's role or impact.
+4. Make descriptions and bullets concise but impactful with metrics; each bullet 1 sentence. Use 3-4 bullets per project. Keep all information truthful.
+5. Use the EXACT project title from "Current Projects" - DO NOT change it.
 
 Return results as a JSON object with "projects" key containing an array:
    {{
@@ -594,7 +656,7 @@ Return results as a JSON object with "projects" key containing an array:
 Return ONLY the JSON object with "projects" key, no additional text."""
 
         prompt = clean_text(prompt)
-        system_message = clean_text("You are an expert resume writer. Always return valid JSON objects.")
+        system_message = clean_text("You are an expert resume writer. Match the job's requirements and keywords; never downgrade the candidate's level. Present the profile as professionally as possible. Always return valid JSON.")
         
         messages = [
             {"role": "system", "content": system_message},
@@ -618,21 +680,32 @@ Return ONLY the JSON object with "projects" key, no additional text."""
             content = response.choices[0].message.content
             content = clean_text(content)
             result = json.loads(content)
-            
             if isinstance(result, dict) and 'projects' in result:
-                return result['projects']
+                out = result['projects']
+                _log.debug("customize_projects: API returned %s projects", len(out))
+                for i, p in enumerate(out):
+                    _log.debug("customize_projects: API project[%s] title=%r", i, (p.get('title') or '')[:60])
+                return out
             elif isinstance(result, list):
+                _log.debug("customize_projects: API returned list of %s items", len(result))
                 return result
             else:
                 for value in result.values():
                     if isinstance(value, list):
+                        _log.debug("customize_projects: API returned dict with list value len=%s", len(value))
                         return value
+                _log.debug("customize_projects: API response format unexpected, keys=%s", list(result.keys()) if isinstance(result, dict) else type(result))
                 return []
-        except json.JSONDecodeError:
-            content = clean_text(response.choices[0].message.content.strip())
+        except json.JSONDecodeError as e:
+            raw = response.choices[0].message.content
+            content = clean_text(raw.strip())[:300]
+            _log.debug("customize_projects: JSONDecodeError %s; content preview=%r", e, content)
             if content.startswith('['):
                 return json.loads(content)
             raise ValueError(f"Failed to parse project customization: {content[:200]}")
+        except Exception as e:
+            _log.debug("customize_projects: exception %s", e, exc_info=True)
+            raise
     
     def prioritize_skills(self, job_description: str, model: str = "gpt-4o-mini") -> Dict[str, List[str]]:
         """Prioritize and reorganize skills based on job description."""
@@ -643,38 +716,24 @@ Return ONLY the JSON object with "projects" key, no additional text."""
         clean_skills = ', '.join([clean_text(skill) for skill in resume_content['skills']])
         clean_job_desc = clean_text(job_description)
         
-        prompt = f"""You are an expert resume writer specializing in ATS optimization. Your task is to create RICHER, MORE DETAILED skill sets that perfectly match the job description.
+        prompt = f"""You are an expert resume writer specializing in ATS and AI screening. Your task is to make the resume SKILLS SECTION perfectly match the job's tech stack so the profile is detected as a strong match.
 
-Current Skills:
+Current Skills (candidate's existing skills):
 {clean_skills}
 
 Job Description:
 {clean_job_desc}
 
-CRITICAL INSTRUCTIONS:
-1. Create COMPREHENSIVE skill categories that match the job requirements
-2. Group skills into detailed, specific categories (e.g., "Programming Languages", "Web Frameworks", "Backend Frameworks", "Frontend Frameworks", "Cloud Platforms & Services", "DevOps & CI/CD Tools", "Databases & Data Storage", "Testing & QA Tools", "Version Control", "API & Integration", "Architecture Patterns", "Methodologies")
-3. Prioritize skills mentioned in the job description - put them first in their categories
-4. Include ALL relevant skills from the current list - don't omit any that could be relevant
-5. Create MORE categories if needed to better organize and showcase skills
-6. For each category, include as many relevant skills as possible to make the skill set richer
-7. Only use skills from the current list - don't add new skills that aren't in the list
-8. Make the skill organization comprehensive and impressive - show depth and breadth
-9. Return results as JSON with this structure:
-   {{
-     "Programming Languages": ["Python", "Java", "C#", "JavaScript"],
-     "Backend Frameworks": [".NET Core", "ASP.NET MVC", "Django", "Spring Boot"],
-     "Frontend Frameworks": ["React", "Angular", "Vue.js"],
-     "Cloud Platforms": ["AWS", "Azure", "Google Cloud"],
-     "DevOps Tools": ["Docker", "Kubernetes", "Jenkins", "CI/CD"],
-     "Databases": ["SQL Server", "PostgreSQL", "MongoDB", "Cosmos DB"],
-     ...
-   }}
+CRITICAL INSTRUCTIONS - STACK MUST MATCH JOB:
+1. EXTRACT every technology, framework, tool, and platform mentioned in the job and reflect them in the skills section. USE THE EXACT SAME NAMES as in the job.
+2. PRIORITIZE job-mentioned skills first in each category, then include ALL other relevant skills from the candidate's list. Do NOT remove or downgrade the candidate's skills to match a junior job - present the full professional skill set (e.g. if the candidate has architecture, leadership, or advanced tools, keep them). Match the job's stack but keep the profile as strong and professional as possible.
+3. ADD missing job-required technologies when the candidate has related experience (use the exact job term). Create categories that align with the job.
+4. Return results as JSON with category names as keys and arrays of skill strings as values.
 
 Return ONLY the JSON object, no additional text."""
 
         prompt = clean_text(prompt)
-        system_message = clean_text("You are an expert resume writer. Always return valid JSON. Create comprehensive, detailed skill categories.")
+        system_message = clean_text("You are an expert resume writer. Always return valid JSON. The skills section must match the job's tech stack exactly so ATS and AI detect the resume as a strong match.")
         
         messages = [
             {"role": "system", "content": system_message},
@@ -720,10 +779,14 @@ Return ONLY the JSON object, no additional text."""
             updates['experiences'] = self.customize_experience_bullets(job_description, model)
         
         if customize_projects:
+            _ensure_debug_log()
             projects = self.customize_projects(job_description, model)
+            _log.debug("customize_for_job: customize_projects returned %s items", len(projects) if projects else 0)
             if projects:
                 updates['projects'] = projects
-        
+            else:
+                _log.debug("customize_for_job: updates['projects'] NOT set (empty list)")
+
         if customize_skills:
             updates['skills'] = self.prioritize_skills(job_description, model)
         
@@ -738,9 +801,8 @@ Return ONLY the JSON object, no additional text."""
         
         if 'summary' in updates:
             summary_text = re.sub(r'<[^>]+>', '', updates['summary'])
-            
             for section in self.resume_data.get('sections', []):
-                if section.get('__t') == 'SummarySection':
+                if self._section_has_summary_items(section):
                     if section.get('items'):
                         # Update ALL summary items, not just the first one
                         for item in section['items']:
@@ -760,7 +822,7 @@ Return ONLY the JSON object, no additional text."""
         if 'experiences' in updates:
             exp_section = None
             for section in self.updater.data.get('sections', []):
-                if section.get('__t') == 'ExperienceSection':
+                if self._section_has_experience_items(section):
                     exp_section = section
                     break
             
@@ -772,19 +834,17 @@ Return ONLY the JSON object, no additional text."""
                 # Use normalized strings for matching
                 custom_exp_map = {}
                 for custom_exp in updates['experiences']:
-                    norm_pos = normalize_for_matching(custom_exp.get('position', ''))
-                    norm_comp = normalize_for_matching(custom_exp.get('company', ''))
+                    norm_pos = normalize_for_matching(custom_exp.get('position', '') or custom_exp.get('title', ''))
+                    norm_comp = normalize_for_matching(custom_exp.get('company', '') or custom_exp.get('workplace', ''))
                     key = (norm_pos, norm_comp)
                     custom_exp_map[key] = custom_exp
                 
-                # Update ALL experience items
+                # Update ALL experience items; use same keys as in PDF (position/title, workplace/company)
                 for item in exp_section.get('items', []):
-                    original_position = item.get('position', '')
-                    original_company = item.get('workplace', '')
+                    original_position = item.get('position', '') or item.get('title', '')
+                    original_company = item.get('workplace', '') or item.get('company', '')
                     original_dateRange = item.get('dateRange', {})
                     original_location = item.get('location', '')
-                    
-                    # Normalize for matching
                     norm_original_pos = normalize_for_matching(original_position)
                     norm_original_comp = normalize_for_matching(original_company)
                     item_key = (norm_original_pos, norm_original_comp)
@@ -792,20 +852,23 @@ Return ONLY the JSON object, no additional text."""
                     if item_key in custom_exp_map:
                         custom_exp = custom_exp_map[item_key]
                         item['bullets'] = custom_exp.get('bullets', [])
-                        item['position'] = original_position
-                        item['workplace'] = original_company
+                        if 'position' in item:
+                            item['position'] = original_position
+                        if 'title' in item:
+                            item['title'] = original_position
+                        if 'workplace' in item:
+                            item['workplace'] = original_company
+                        if 'company' in item:
+                            item['company'] = original_company
                         item['dateRange'] = original_dateRange
                         item['location'] = original_location
                         updated_count += 1
                     else:
-                        # If no exact match, try fuzzy matching with normalized strings
-                        matched = False
                         best_match = None
                         best_score = 0
-                        
                         for custom_exp in updates['experiences']:
-                            custom_pos = normalize_for_matching(custom_exp.get('position', ''))
-                            custom_comp = normalize_for_matching(custom_exp.get('company', ''))
+                            custom_pos = normalize_for_matching(custom_exp.get('position', '') or custom_exp.get('title', ''))
+                            custom_comp = normalize_for_matching(custom_exp.get('company', '') or custom_exp.get('workplace', ''))
                             
                             # Calculate match score based on position and company similarity
                             pos_score = 0
@@ -856,119 +919,86 @@ Return ONLY the JSON object, no additional text."""
                         
                         if best_match:
                             item['bullets'] = best_match.get('bullets', [])
-                            item['position'] = original_position
-                            item['workplace'] = original_company
+                            if 'position' in item:
+                                item['position'] = original_position
+                            if 'title' in item:
+                                item['title'] = original_position
+                            if 'workplace' in item:
+                                item['workplace'] = original_company
+                            if 'company' in item:
+                                item['company'] = original_company
                             item['dateRange'] = original_dateRange
                             item['location'] = original_location
                             updated_count += 1
-                            matched = True
             
-            self.resume_data = self.updater.data
+            self.resume_data = copy.deepcopy(self.updater.data)
         
         if 'projects' in updates:
+            _ensure_debug_log()
             proj_section = None
-            for section in self.updater.data.get('sections', []):
-                # Projects can be in either ProjectSection or ActivitySection
-                if section.get('__t') == 'ProjectSection' or section.get('__t') == 'ActivitySection':
+            for si, section in enumerate(self.updater.data.get('sections', [])):
+                if self._section_has_project_items(section):
                     proj_section = section
+                    _log.debug("apply_updates(projects): section found at index %s", si)
                     break
-            
+            if not proj_section:
+                _log.debug("apply_updates(projects): NO project section found in updater.data")
+
             if proj_section:
-                updated_count = 0
-                total_items = len(proj_section.get('items', []))
-                
-                # Create a mapping of custom projects using normalized keys
-                custom_proj_map = {}
-                for custom_proj in updates['projects']:
-                    # Use normalize_for_matching for consistent key generation
-                    key = normalize_for_matching(custom_proj.get('title', ''))
-                    custom_proj_map[key] = custom_proj
-                
-                # Update ALL project items
-                for idx, item in enumerate(proj_section.get('items', []), 1):
+                items = proj_section.get('items', [])
+                custom_list = updates['projects']
+                _log.debug("apply_updates(projects): items=%s, custom_list=%s", len(items), len(custom_list))
+
+                def set_proj_content(it, custom, title_to_set: str):
+                    if custom.get('description') is not None:
+                        if 'description' in it:
+                            it['description'] = custom['description']
+                        if 'text' in it:
+                            it['text'] = custom['description']
+                    if custom.get('bullets') is not None:
+                        it['bullets'] = list(custom['bullets'])
+                    if 'title' in it:
+                        it['title'] = title_to_set
+                    elif 'name' in it:
+                        it['name'] = title_to_set
+                    elif 'projectName' in it:
+                        it['projectName'] = title_to_set
+
+                # Apply by index (API returns same order as sent) - fixes duplicate titles and title mismatch
+                for idx, item in enumerate(items):
                     original_title = item.get('title', '') or item.get('name', '') or item.get('projectName', '')
                     if not original_title:
+                        _log.debug("apply_updates(projects): item[%s] skipped (no title/name/projectName)", idx)
                         continue
-                    
-                    # Normalize for matching (same as custom projects)
-                    norm_original_title = normalize_for_matching(original_title)
-                    
-                    matched = False
-                    
-                    # Try exact match first
-                    if norm_original_title in custom_proj_map:
-                        custom_proj = custom_proj_map[norm_original_title]
-                        if 'description' in custom_proj:
-                            item['description'] = custom_proj['description']
-                        if 'bullets' in custom_proj:
-                            # Ensure bullets list exists and is properly set
-                            item['bullets'] = list(custom_proj['bullets'])
-                        # Preserve original title field name
-                        if 'title' in item:
-                            item['title'] = original_title
-                        elif 'name' in item:
-                            item['name'] = original_title
-                        elif 'projectName' in item:
-                            item['projectName'] = original_title
-                        updated_count += 1
-                        matched = True
+                    display_title = self._normalize_project_title(original_title)
+                    if idx < len(custom_list):
+                        set_proj_content(item, custom_list[idx], display_title)
+                        _log.debug("apply_updates(projects): item[%s] applied by index, original_title=%r", idx, original_title[:50])
                     else:
-                        # Try fuzzy matching with word-based similarity
-                        best_match = None
-                        best_score = 0.0
-                        
-                        for custom_proj in updates['projects']:
-                            custom_title = custom_proj.get('title', '')
-                            norm_custom_title = normalize_for_matching(custom_title)
-                            
-                            # Calculate match score based on word similarity
-                            # Filter out punctuation-only words (like '-', '.', etc.)
-                            orig_words = {w for w in norm_original_title.split() if w and not re.match(r'^[^\w]+$', w)}
-                            custom_words = {w for w in norm_custom_title.split() if w and not re.match(r'^[^\w]+$', w)}
-                            
-                            if orig_words and custom_words:
-                                common_words = orig_words.intersection(custom_words)
-                                # Calculate score based on common words
-                                score = len(common_words) / max(len(orig_words), len(custom_words))
-                                # If most key words match, boost the score
-                                if len(common_words) >= 2:  # At least 2 common words
-                                    score = max(score, 0.6)
-                            else:
-                                score = 0.0
-                            
-                            # Also try substring matching as fallback
-                            if not score and (norm_custom_title in norm_original_title or norm_original_title in norm_custom_title):
-                                score = 0.7
-                            
-                            if score > best_score and score >= 0.5:  # Require at least 50% match
-                                best_score = score
-                                best_match = custom_proj
-                        
-                        if best_match:
-                            if 'description' in best_match:
-                                item['description'] = best_match['description']
-                            if 'bullets' in best_match:
-                                # Ensure bullets list exists and is properly set
-                                item['bullets'] = list(best_match['bullets'])
-                            # Preserve original title field name
-                            if 'title' in item:
-                                item['title'] = original_title
-                            elif 'name' in item:
-                                item['name'] = original_title
-                            elif 'projectName' in item:
-                                item['projectName'] = original_title
-                            updated_count += 1
-                            matched = True
-            
-            # CRITICAL: Ensure data is properly synced
+                        norm_original = normalize_for_matching(original_title)
+                        matched = False
+                        for custom_proj in custom_list:
+                            if normalize_for_matching(custom_proj.get('title', '')) == norm_original:
+                                set_proj_content(item, custom_proj, display_title)
+                                matched = True
+                                _log.debug("apply_updates(projects): item[%s] applied by title fallback", idx)
+                                break
+                        if not matched:
+                            _log.debug("apply_updates(projects): item[%s] NOT matched (idx >= len(custom_list) and no title match)", idx)
+
             self.resume_data = copy.deepcopy(self.updater.data)
         
         if 'skills' in updates:
             self.updater.update_skills(updates['skills'])
             self.resume_data = self.updater.data
     
-    def save_customized_resume(self, output_path: str, job_title: Optional[str] = None, render_visual: bool = False):
-        """Save the customized resume."""
+    def save_customized_resume(self, output_path: str, job_title: Optional[str] = None, render_visual: bool = False) -> tuple:
+        """Save the customized resume.
+        
+        Returns:
+            (visual_path, visual_error): Path to visual PDF if created else None;
+            error message if visual rendering failed else None.
+        """
         if not self.resume_data:
             raise ValueError("No resume data available. Call apply_updates() first.")
         
@@ -993,8 +1023,35 @@ Return ONLY the JSON object, no additional text."""
         output_path_obj.parent.mkdir(parents=True, exist_ok=True)
         
         self.updater.data = copy.deepcopy(self.resume_data)
-        self.updater.save_pdf(output_path, render_visual=render_visual)
-        print(f"\n[OK] Customized resume saved to: {output_path}")
+        # Embed customized JSON into PDF (updater does not render visual)
+        self.updater.save_pdf(output_path, render_visual=False)
+        
+        # Render visual PDF from customizer's resume_data so it always shows customized content
+        visual_path = None
+        visual_error = None
+        if render_visual:
+            visual_path = str(output_path_obj.with_suffix('.visual.pdf'))
+            try:
+                from pdf_renderer import PDFRenderer
+                data_for_visual = copy.deepcopy(self.resume_data)
+                renderer = PDFRenderer(data_for_visual)
+                renderer.render_pdf(visual_path)
+            except ImportError:
+                visual_error = "Visual PDF not available (install weasyprint or reportlab)."
+            except Exception as e:
+                visual_error = str(e)
+                visual_path = None
+                try:
+                    import traceback
+                    traceback.print_exc()
+                except Exception:
+                    pass
+        
+        try:
+            print(f"\n[OK] Customized resume saved to: {output_path}")
+        except UnicodeEncodeError:
+            print(f"\n[OK] Customized resume saved.")
+        return (visual_path, visual_error)
 
 
 def extract_job_title(job_description: str) -> str:

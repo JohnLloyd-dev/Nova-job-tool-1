@@ -556,15 +556,12 @@ class ResumeCustomizerGUI(QMainWindow):
         
         try:
             # Step 1: Save customized resume to ROOT directory (quick access)
-            self.customizer.save_customized_resume(
+            visual_pdf_path, visual_error = self.customizer.save_customized_resume(
                 output_path,
                 render_visual=True
             )
-            
-            # Determine visual PDF path in root directory (created by save_customized_resume)
-            visual_pdf_path = str(Path(output_path).with_suffix('.visual.pdf'))
-            visual_path_obj = Path(visual_pdf_path)
-            if not visual_path_obj.exists():
+            # Use returned path; if save_pdf failed to create visual, path may be None
+            if visual_pdf_path and not Path(visual_pdf_path).exists():
                 visual_pdf_path = None
             
             # Step 2: Also organize files into jobs/ folder structure (archive)
@@ -578,13 +575,14 @@ class ResumeCustomizerGUI(QMainWindow):
             )
             
             # Show success message with both locations
-            root_dir = Path(output_path).parent
             message = (
                 f"✅ Customized resume saved to ROOT directory:\n"
                 f"   {output_path}\n"
             )
             if visual_pdf_path:
                 message += f"   {visual_pdf_path}\n"
+            if visual_error:
+                message += f"\n⚠️ Visual PDF: {visual_error}\n"
             message += (
                 f"\n📁 Files also organized in JOBS folder:\n"
                 f"   {organized['folder']}\n\n"
@@ -667,6 +665,13 @@ def main():
     """Main entry point."""
     # Setup Windows console for UTF-8 if needed
     setup_windows_console()
+    # Force UTF-8 for print() so paths/messages with Unicode don't raise charmap errors on Windows
+    if sys.platform == 'win32':
+        try:
+            sys.stdout.reconfigure(encoding='utf-8')
+            sys.stderr.reconfigure(encoding='utf-8')
+        except (AttributeError, OSError):
+            pass
     
     app = QApplication(sys.argv)
     window = ResumeCustomizerGUI()
